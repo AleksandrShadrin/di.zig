@@ -154,7 +154,7 @@ pub const ServiceProvider = struct {
         switch (dep_info.life_cycle) {
             .transient => {
                 const ptr = try self.allocator.create(dereferenced_type);
-                ptr.* = try dep_info.builder.build(self);
+                ptr.* = try self.build(dereferenced_type, dep_info);
 
                 try self.resolve_ctx.?.append(ptr, di_interface.?);
 
@@ -169,7 +169,7 @@ pub const ServiceProvider = struct {
                 }
 
                 const ptr = try self.allocator.create(dereferenced_type);
-                ptr.* = try dep_info.builder.build(self);
+                ptr.* = try self.build(dereferenced_type, dep_info);
 
                 try self.singleton.append(.{ .info = di_interface.?, .ptr = ptr });
 
@@ -179,6 +179,19 @@ pub const ServiceProvider = struct {
         }
 
         return ServiceProviderError.NoResolveContextFound;
+    }
+
+    fn build(self: *Self, comptime T: type, dep_info: *DependencyInfo(*T)) !T {
+        var t: T = undefined;
+
+        if (dep_info.builder == null) {
+            var b = ServiceProviderBuilder(T).createBuilder();
+            t = try b.build(self);
+        } else {
+            t = try dep_info.builder.?.build(self);
+        }
+
+        return t;
     }
 };
 
@@ -276,13 +289,14 @@ const ComptimeBuilderError = error{
 ///
 /// T The type to build.
 /// Return A struct with `buildFn` and `createBuilder` methods.
-pub fn ComptimeBuilder(comptime T: type) type {
+pub fn ServiceProviderBuilder(comptime T: type) type {
     return struct {
         /// Builds an instance of type `T` using the provided ServiceProvider.
         ///
         /// sp The ServiceProvider to use for resolving dependencies.
         /// Return An instance of type `T` or an error if building fails.
-        pub fn buildFn(sp: *ServiceProvider) !T {
+        pub fn buildFn(ctx: *anyopaque) !T {
+            const sp: *ServiceProvider = @ptrCast(@alignCast(ctx));
             // Ensure that type T has an init function.
             if (!utilities.hasInit(T))
                 return ComptimeBuilderError.NoInitFn;
@@ -311,25 +325,5 @@ pub fn ComptimeBuilder(comptime T: type) type {
         pub fn createBuilder() Builder(T) {
             return Builder(T).fromFn(@This().buildFn);
         }
-    };
-}
-
-pub fn DependecyResolver(comptime T: type) type {
-    return struct {
-        resolve_fn: *const fn (*anyopaque) anyerror!*T,
-    };
-}
-
-pub fn ServiceProviderDependecyResolver(comptime T: type) DependecyResolver(T) {
-    const ctx = struct {
-        pub fn resolve(ctx: *anyopaque) !*T {
-            const self: *ServiceProvider = @ptrCast(@alignCast(ctx));
-
-            return try self.resolve(T);
-        }
-    };
-
-    return DependecyResolver(T){
-        .resolve_fn = ctx.resolve,
     };
 }

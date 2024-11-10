@@ -5,7 +5,6 @@ const builder_module = @import("builder.zig");
 
 // Consolidated imports from service_provider.zig
 const ServiceProvider = service_provider.ServiceProvider;
-const ComptimeBuilder = service_provider.ComptimeBuilder;
 
 // Import Builder from builder.zig
 const Builder = builder_module.Builder;
@@ -67,7 +66,7 @@ pub fn DependencyInfo(comptime T: type) type {
         name: []const u8 = @typeName(DerefT),
         dep_array: [dep_count]Dependency = undefined, // Initialized in `init`
 
-        builder: Builder(DerefT),
+        builder: ?Builder(DerefT) = null,
         with_comptime_builder: bool,
 
         life_cycle: LifeCycle,
@@ -75,7 +74,6 @@ pub fn DependencyInfo(comptime T: type) type {
         /// Initializes the DependencyInfo with a lifecycle
         pub fn init(life_cycle: LifeCycle) !Self {
             var self = Self{
-                .builder = ComptimeBuilder(DerefT).createBuilder(),
                 .with_comptime_builder = true,
                 .life_cycle = life_cycle,
                 .dep_array = undefined, // Will be initialized below

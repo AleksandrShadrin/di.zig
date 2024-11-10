@@ -133,10 +133,30 @@ pub fn getBuilder(comptime t: type, comptime f: anytype) !Builder(t) {
     const return_type = fi.Fn.return_type.?;
     const return_ti = @typeInfo(return_type);
 
+    const fnWrapper = struct {
+        pub fn wrapper(ctx: *anyopaque) !t {
+            const sp: *ServiceProvider = @ptrCast(@alignCast(ctx));
+            return switch (fi.Fn.params.len) {
+                0 => f(),
+                1 => f(sp),
+                else => {},
+            };
+        }
+
+        pub fn wrapperNoError(ctx: *anyopaque) t {
+            const sp: *ServiceProvider = @ptrCast(@alignCast(ctx));
+            return switch (fi.Fn.params.len) {
+                0 => f(),
+                1 => f(sp),
+                else => {},
+            };
+        }
+    };
+
     if (return_ti == .ErrorUnion) {
-        return Builder(t).fromFn(f);
+        return Builder(t).fromFn(fnWrapper.wrapper);
     } else if (return_type == t) {
-        return Builder(t).fromFnWithNoError(f);
+        return Builder(t).fromFnWithNoError(fnWrapper.wrapperNoError);
     } else {
         return BuilderFnErrors.InvalidReturnType;
     }
@@ -169,14 +189,4 @@ pub fn getFnType(comptime T: type, comptime fnName: []const u8) ?type {
     }
 
     return @field(T, fnName);
-}
-
-/// Additional Utility: Instantiates a type `T` using its `init` method with provided arguments.
-///
-/// # Example
-/// ```zig
-/// const instance = try instantiate(MyType, args...);
-/// ```
-pub fn instantiate(comptime T: type, args: anytype) !T {
-    return try T.init(args);
 }

@@ -46,34 +46,27 @@ pub fn main() !void {
 
     // Register Logger as a singleton
     try cont.registerTransient(Logger);
+    try cont.registerTransientWithFactory(Logger.init);
 
     // Register Database as a non-singleton
     try cont.registerTransient(Database);
 
     var sp = try cont.createServiceProvider();
 
-    // // Resolve Logger multiple times; the same instance should be returned
-    // const logger1 = try sp.resolve(Logger);
-    // const logger2 = try sp.resolve(Logger);
+    // Resolve Logger multiple times; the same instance should be returned
+    const logger1 = try sp.resolve(Logger);
+    const logger2 = try sp.resolve(Logger);
 
-    // try sp.unresolve(logger1);
-    // try sp.unresolve(logger2);
+    try sp.unresolve(logger1);
+    try sp.unresolve(logger2);
 
-    // std.debug.print("{any} {any}\n", .{ @intFromPtr(logger1), @intFromPtr(logger2) });
-    // // Resolve Database multiple times; different instances should be returned
-    // const db1 = try sp.resolve(Database);
-    // const db2 = try sp.resolve(Database);
+    std.debug.print("{any} {any}\n", .{ @intFromPtr(logger1), @intFromPtr(logger2) });
+    // Resolve Database multiple times; different instances should be returned
+    const db1 = try sp.resolve(Database);
+    const db2 = try sp.resolve(Database);
 
-    // _ = db1;
-    // _ = db2;
-
-    var s = service_provider.ServiceProviderDependecyResolver(Logger);
-
-    _ = try s.resolve_fn(&sp);
-
-    const f = &service_provider.ServiceProviderDependecyResolver;
-
-    _ = try f(Database).resolve_fn(&sp);
+    _ = db1;
+    _ = db2;
 }
 
 test "check for mem leaks" {
