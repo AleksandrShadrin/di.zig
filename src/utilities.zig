@@ -195,46 +195,18 @@ pub fn genericName(comptime T: anytype) []const u8 {
     const ti = @typeInfo(@TypeOf(T));
 
     if (ti == .Fn and ti.Fn.is_generic) {
-        comptime var fn_args: [ti.Fn.params.len]type = undefined;
+        const mock = MockGeneric(T){};
+        var cut: []const u8 = @typeName(@TypeOf(mock))["utilities.MockGeneric((function '".len..];
+        cut = cut[0..(cut.len - "'))".len)];
 
-        inline for (ti.Fn.params, 0..) |p, i| {
-            fn_args[i] = if (p.type == null) type else p.type.?;
-        }
-
-        comptime var params: std.meta.Tuple(&fn_args) = undefined;
-        comptime var params_string_len: usize = 0;
-
-        inline for (0..ti.Fn.params.len) |i| {
-            if (ti.Fn.params[i].type == null) {
-                params[i] = u8;
-                params_string_len += 2;
-            } else if (ti.Fn.params[i].type.? == type) {
-                params[i] = u8;
-                params_string_len += 2;
-            } else {
-                const value: ti.Fn.params[i].type.? = undefined;
-                params[i] = value;
-                params_string_len += "undefined".len;
-            }
-        }
-
-        const t = @call(.auto, T, params);
-
-        const mock_name = @typeName(t);
-
-        comptime var len: usize = 0;
-
-        switch (ti.Fn.params.len) {
-            inline 0 => {
-                len = mock_name.len - 2;
-            },
-            inline else => |p_len| {
-                len = mock_name.len - params_string_len - 1 * (p_len - 1) - 2;
-            },
-        }
-
-        return mock_name[0..len];
+        return cut;
     }
 
     @compileError(@typeName(@TypeOf(T)) ++ " should be generic");
+}
+
+fn MockGeneric(comptime f: anytype) type {
+    return struct {
+        comptime inner_fn: @TypeOf(f) = f,
+    };
 }
