@@ -6,11 +6,19 @@ const dependency = @import("dependency.zig");
 const service_provider = @import("service_provider.zig");
 const builder = @import("builder.zig");
 
+const Generic = @import("generics.zig").Generic;
+
 // Example dependency types
 pub const Logger = struct {
-    pub fn init(sp: *service_provider.ServiceProvider) !Logger {
+    pub fn init(sp: *service_provider.ServiceProvider, a: std.mem.Allocator) !Logger {
         // Initialize the Logger
+        _ = a;
+
         _ = sp;
+        return Logger{};
+    }
+
+    pub fn factory() Logger {
         return Logger{};
     }
 
@@ -46,7 +54,9 @@ pub fn main() !void {
 
     // Register Logger as a singleton
     try cont.registerTransient(Logger);
-    try cont.registerTransientWithFactory(Logger.init);
+    try cont.registerTransient(std.ArrayList);
+    // try cont.registerSingleton(std.ArrayHashMap);
+    try cont.registerTransientWithFactory(Logger.factory);
 
     // Register Database as a non-singleton
     try cont.registerTransient(Database);
@@ -57,16 +67,41 @@ pub fn main() !void {
     const logger1 = try sp.resolve(Logger);
     const logger2 = try sp.resolve(Logger);
 
+    const generic_container = try sp.resolve(Generic(std.ArrayList).GenericContainer(.{u8}));
+
+    var array = generic_container.generic_payload;
+    try array.append(22);
+    try array.append(44);
+
     try sp.unresolve(logger1);
     try sp.unresolve(logger2);
 
-    std.debug.print("{any} {any}\n", .{ @intFromPtr(logger1), @intFromPtr(logger2) });
+    // std.debug.print("{any} {any}\n", .{ @intFromPtr(logger1), @intFromPtr(logger2) });
     // Resolve Database multiple times; different instances should be returned
     const db1 = try sp.resolve(Database);
     const db2 = try sp.resolve(Database);
 
+    std.debug.print("{any}\n", .{array.items});
+
     _ = db1;
     _ = db2;
+}
+
+pub fn name() void {}
+
+pub fn Gen(f: *const fn () void, s: type, ff: fn () void) type {
+    _ = s;
+    _ = f;
+    _ = ff;
+    return struct {
+        const Self = @This();
+
+        name: []const u8,
+
+        pub fn init() Self {
+            return Self{};
+        }
+    };
 }
 
 test "check for mem leaks" {

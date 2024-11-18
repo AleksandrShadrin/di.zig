@@ -23,7 +23,7 @@ pub fn hasInit(comptime T: type) bool {
     }
 
     // Obtain the return type information of `T.init`
-    const return_type = @typeInfo(returnTypeOfInitFn(T));
+    const return_type = returnTypeOfInitFn(T);
     return returnTypeMatch(return_type, T);
 }
 
@@ -33,11 +33,14 @@ fn returnTypeOfInitFn(comptime T: type) type {
 }
 
 /// Helper function to match the return type against expected patterns
-fn returnTypeMatch(return_ti: std.builtin.Type, T: type) bool {
-    switch (return_ti) {
-        .ErrorUnion => return return_ti.ErrorUnion.payload == T,
-        else => return return_ti == @typeInfo(T),
+inline fn returnTypeMatch(comptime return_type: type, T: type) bool {
+    const return_ti = @typeInfo(return_type);
+
+    if (return_ti == .ErrorUnion) {
+        return return_ti.ErrorUnion.payload == T;
     }
+
+    return return_type == T;
 }
 
 /// Retrieves the argument types of the `init` method of type `T`.
@@ -47,7 +50,7 @@ fn returnTypeMatch(return_ti: std.builtin.Type, T: type) bool {
 /// ```zig
 /// const args = getInitArgs(MyType);
 /// ```
-pub fn getInitArgs(comptime T: type) []const type {
+pub inline fn getInitArgs(comptime T: type) []const type {
     const init_fn = T.init;
     const ti = @typeInfo(@TypeOf(init_fn)).Fn;
 

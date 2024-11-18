@@ -3,6 +3,7 @@ const container = @import("container.zig");
 const utilities = @import("utilities.zig");
 const dependency = @import("dependency.zig");
 const builder = @import("builder.zig");
+const generic = @import("generics.zig");
 
 // Define custom errors related to the ServiceProvider.
 const ServiceProviderError = error{
@@ -94,6 +95,14 @@ pub const ServiceProvider = struct {
         return ServiceProviderError.NoResolveContextFound;
     }
 
+    inline fn getResolveType(comptime T: type) type {
+        if (T == std.mem.Allocator) {
+            return anyerror!T;
+        } else {
+            return anyerror!*T;
+        }
+    }
+
     /// Resolves a dependency of the specified type.
     ///
     /// T The type of the dependency to resolve. Must not be a pointer type.
@@ -102,6 +111,11 @@ pub const ServiceProvider = struct {
         // Ensure that T is not a pointer type at compile time.
         if (@typeInfo(T) == .Pointer)
             @compileError("Type " ++ @typeName(T) ++ " should not be a pointer type for resolve.");
+
+        // Handle special case for Allocator if not registered in dependencies.
+        if (T == std.mem.Allocator or
+            T == Self)
+            @compileError("Can't return " ++ @typeName(T) ++ " it can be accessed through service provider or as dependency");
 
         // If there is no current resolve context, create one.
         if (self.resolve_ctx == null) {
@@ -112,7 +126,7 @@ pub const ServiceProvider = struct {
             }
 
             // Perform the actual resolution.
-            const resolved = try self.inner_resolve(*T);
+            const resolved = try self.inner_resolve(T);
 
             // Add the resolve context to the container.
             try self.resolve_ctx_container.append(self.resolve_ctx.?);
@@ -121,27 +135,65 @@ pub const ServiceProvider = struct {
         }
 
         // Perform the actual resolution within the existing context.
-        return self.inner_resolve(*T);
+        return self.inner_resolve(T);
     }
 
     /// Internal function to handle the resolution logic.
     ///
     /// T The type of the dependency to resolve.
     /// Return An instance of the resolved dependency.
-    fn inner_resolve(self: *Self, T: type) !T {
-        // Handle special case for Allocator if not registered in dependencies.
-        if (T == @TypeOf(*std.mem.Allocator) and
-            !self.container.dependencies.contains(@typeName(std.mem.Allocator)))
-        {
-            return *self.allocator;
-        }
+    fn inner_resolve(self: *Self, T: type) getResolveType(T) {
+        if (T == std.mem.Allocator)
+            return self.allocator;
 
-        if (T == *Self) {
+        if (T == Self) {
             return self;
         }
 
         const dereferenced_type: type = utilities.deref(T);
-        var di_interface = self.container.dependencies.get(@typeName(dereferenced_type));
+
+        if (generic.isGeneric(dereferenced_type)) {
+            return try self.buildGenericType(dereferenced_type);
+        } else {
+            return try self.buildSimpleType(dereferenced_type);
+        }
+    }
+
+    fn buildGenericType(self: *Self, T: type) !*T {
+        const inner_type: type = generic.getGenericType(T);
+        const generic_name = generic.getName(T);
+
+        const generic_di_interface = self.container.dependencies.get(generic_name);
+
+        if (generic_di_interface == null) {
+            // return try self.buildSimpleType(inner_type);
+            return ServiceProviderError.ServiceNotFound;
+        }
+
+        const concrete_di_interface = self.container.dependencies.get(@typeName(inner_type));
+        const container_di_interface = self.container.dependencies.get(@typeName(T));
+
+        if (concrete_di_interface == null) {
+            try switch (generic_di_interface.?.life_cycle) {
+                .singleton => self.container.registerSingleton(inner_type),
+                .scoped => self.container.registerScoped(inner_type),
+                .transient => self.container.registerTransient(inner_type),
+            };
+        }
+
+        if (container_di_interface == null) {
+            try switch (generic_di_interface.?.life_cycle) {
+                .singleton => self.container.registerSingleton(T),
+                .scoped => self.container.registerScoped(T),
+                .transient => self.container.registerTransient(T),
+            };
+        }
+
+        return try self.buildSimpleType(T);
+    }
+
+    inline fn buildSimpleType(self: *Self, T: type) !*T {
+        var di_interface = self.container.dependencies.get(@typeName(T));
 
         // Return an error if the dependency information is not found.
         if (di_interface == null) {
@@ -149,12 +201,12 @@ pub const ServiceProvider = struct {
         }
 
         // Cast the dependency interface to the appropriate type.
-        const dep_info: *DependencyInfo(T) = @ptrCast(@alignCast(di_interface.?.ptr));
+        const dep_info: *DependencyInfo(*T, false) = @ptrCast(@alignCast(di_interface.?.ptr));
 
         switch (dep_info.life_cycle) {
             .transient => {
-                const ptr = try self.allocator.create(dereferenced_type);
-                ptr.* = try self.build(dereferenced_type, dep_info);
+                const ptr = try self.allocator.create(T);
+                ptr.* = try self.build(T, dep_info);
 
                 try self.resolve_ctx.?.append(ptr, di_interface.?);
 
@@ -163,25 +215,25 @@ pub const ServiceProvider = struct {
             .singleton => {
                 for (self.singleton.items) |*r| {
                     if (std.mem.eql(u8, r.info.getName(), di_interface.?.getName())) {
-                        const ptr: *dereferenced_type = @ptrCast(@alignCast(r.ptr));
+                        const ptr: *T = @ptrCast(@alignCast(r.ptr));
                         return ptr;
                     }
                 }
 
-                const ptr = try self.allocator.create(dereferenced_type);
-                ptr.* = try self.build(dereferenced_type, dep_info);
+                const ptr = try self.allocator.create(T);
+                ptr.* = try self.build(T, dep_info);
 
                 try self.singleton.append(.{ .info = di_interface.?, .ptr = ptr });
 
                 return ptr;
             },
-            else => {},
+            .scoped => {},
         }
 
-        return ServiceProviderError.NoResolveContextFound;
+        unreachable;
     }
 
-    fn build(self: *Self, comptime T: type, dep_info: *DependencyInfo(*T)) !T {
+    fn build(self: *Self, comptime T: type, dep_info: *DependencyInfo(*T, false)) !T {
         var t: T = undefined;
 
         if (dep_info.builder == null) {
@@ -308,7 +360,7 @@ pub fn ServiceProviderBuilder(comptime T: type) type {
 
             // Resolve each dependency and populate the tuple.
             inline for (arg_types, 0..) |arg_type, i| {
-                tuple[i] = try sp.inner_resolve(arg_type);
+                tuple[i] = try sp.inner_resolve(utilities.deref(arg_type));
             }
 
             // Call the init function with the resolved dependencies.

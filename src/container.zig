@@ -9,6 +9,8 @@ const DependencyInfo = @import("dependency.zig").DependencyInfo;
 const IDependencyInfo = @import("dependency.zig").IDependencyInfo;
 const LifeCycle = @import("dependency.zig").LifeCycle;
 
+const Generic = @import("generics.zig").Generic;
+
 const ContainerError = error{ ServiceNotFound, TransitiveDependency, LifeCycleError };
 
 pub const Container = struct {
@@ -32,15 +34,15 @@ pub const Container = struct {
         self.dependencies.deinit();
     }
 
-    pub fn registerSingleton(self: *Self, comptime dep: type) !void {
+    pub fn registerSingleton(self: *Self, comptime dep: anytype) !void {
         try self.register(dep, .singleton);
     }
 
-    pub fn registerScoped(self: *Self, comptime dep: type) !void {
+    pub fn registerScoped(self: *Self, comptime dep: anytype) !void {
         try self.register(dep, .scoped);
     }
 
-    pub fn registerTransient(self: *Self, comptime dep: type) !void {
+    pub fn registerTransient(self: *Self, comptime dep: anytype) !void {
         try self.register(dep, .transient);
     }
 
@@ -56,24 +58,39 @@ pub const Container = struct {
         try self.registerWithFactory(factory, .transient);
     }
 
-    fn register(self: *Self, comptime dep: type, life_cycle: LifeCycle) !void {
-        const dep_info_ptr = try self
-            .allocator
-            .create(DependencyInfo(dep));
+    fn register(self: *Self, comptime dep: anytype, life_cycle: LifeCycle) !void {
+        switch (@typeInfo(@TypeOf(dep))) {
+            .Type => {
+                const dep_info_ptr = try self
+                    .allocator
+                    .create(DependencyInfo(*dep, false));
 
-        dep_info_ptr.* = try DependencyInfo(dep).init(life_cycle);
+                dep_info_ptr.* = try DependencyInfo(*dep, false).init(life_cycle);
 
-        try self.dependencies.put(dep_info_ptr.name, dep_info_ptr.getInterface());
+                try self.dependencies.put(dep_info_ptr.name, dep_info_ptr.getInterface());
+            },
+            .Fn => {
+                const dep_info_ptr = try self
+                    .allocator
+                    .create(DependencyInfo(*Generic(dep), true));
+
+                dep_info_ptr.* = try DependencyInfo(*Generic(dep), true).init(life_cycle);
+                dep_info_ptr.*.name = utilities.genericName(dep);
+
+                try self.dependencies.put(dep_info_ptr.name, dep_info_ptr.getInterface());
+            },
+            else => @compileError("dependency unsupported"),
+        }
     }
 
     fn registerWithFactory(self: *Self, comptime factory: anytype, life_cycle: LifeCycle) !void {
         const T = utilities.getReturnType(factory);
         const dep_info_ptr = try self
             .allocator
-            .create(DependencyInfo(T));
+            .create(DependencyInfo(*T, false));
 
         const builder = try utilities.getBuilder(T, factory);
-        dep_info_ptr.* = DependencyInfo(T).initWithBuilder(builder, life_cycle);
+        dep_info_ptr.* = DependencyInfo(*T, false).initWithBuilder(builder, life_cycle);
 
         try self.dependencies.put(dep_info_ptr.name, dep_info_ptr.getInterface());
     }

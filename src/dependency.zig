@@ -2,7 +2,6 @@ const std = @import("std");
 const utilities = @import("utilities.zig");
 const service_provider = @import("service_provider.zig");
 const builder_module = @import("builder.zig");
-
 // Consolidated imports from service_provider.zig
 const ServiceProvider = service_provider.ServiceProvider;
 
@@ -54,11 +53,14 @@ pub const IDependencyInfo = struct {
 };
 
 // Function to generate DependencyInfo for a given type `T`
-pub fn DependencyInfo(comptime T: type) type {
+pub fn DependencyInfo(comptime T: type, comptime is_generic: bool) type {
     const DerefT = utilities.deref(T);
-    const has_init = utilities.hasInit(DerefT);
 
-    const dep_count: usize = if (has_init) utilities.getInitArgs(DerefT).len else 0;
+    const dep_count: usize = if (is_generic) 0 else utilities.getInitArgs(DerefT).len;
+
+    if (dep_count == 0 and
+        !is_generic)
+        @compileError(@typeName(DerefT) ++ " hasn't init fn");
 
     return struct {
         const Self = @This();
@@ -79,14 +81,18 @@ pub fn DependencyInfo(comptime T: type) type {
                 .dep_array = undefined, // Will be initialized below
             };
 
-            const dependencies = utilities.getInitArgs(DerefT);
+            if (!is_generic) {
+                const dependencies = utilities.getInitArgs(DerefT);
 
-            inline for (dependencies, 0..) |dep, i| {
-                self.dep_array[i] = Dependency{ .name = @typeName(utilities.deref(dep)) };
+                inline for (dependencies, 0..) |dep, i| {
+                    self.dep_array[i] = Dependency{ .name = @typeName(utilities.deref(dep)) };
 
-                // Ensure that the dependency should be a reference
-                if (utilities.deref(dep) == dep) {
-                    return DependencyError.DependencyShouldBeReference;
+                    // Ensure that the dependency should be a reference
+                    if (utilities.deref(dep) == dep and
+                        dep != std.mem.Allocator)
+                    {
+                        return DependencyError.DependencyShouldBeReference;
+                    }
                 }
             }
 
@@ -136,7 +142,7 @@ pub fn DependencyInfo(comptime T: type) type {
         pub fn deinit(ptr: *anyopaque, allocator: std.mem.Allocator) void {
             const item: *DerefT = @ptrCast(@alignCast(ptr));
 
-            Destructor(T).deinit(item) catch |err| {
+            Destructor(DerefT).deinit(item) catch |err| {
                 std.log.err("Error when deinit {any} with error {any}", .{ DerefT, err });
             };
 
@@ -161,9 +167,10 @@ fn Destructor(comptime T: type) type {
             const deinit_fn_type = @typeInfo(@TypeOf(T.deinit)).Fn;
 
             // Ensure `deinit` has exactly one parameter
-            if (deinit_fn_type.params.len != 1 or deinit_fn_type.params[0].type != *T) {
+            if (deinit_fn_type.params.len != 1 or
+                (deinit_fn_type.params[0].type != *T and
+                deinit_fn_type.params[0].type != T))
                 @compileError("deinit should have one parameter for " ++ @typeName(T) ++ " and have single arg as *Self");
-            }
 
             // Handle `deinit` based on its return type
             if (@typeInfo(deinit_fn_type.return_type.?) != .ErrorUnion) {
