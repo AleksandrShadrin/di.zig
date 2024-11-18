@@ -192,7 +192,7 @@ pub const ServiceProvider = struct {
         return try self.buildSimpleType(T);
     }
 
-    inline fn buildSimpleType(self: *Self, T: type) !*T {
+    fn buildSimpleType(self: *Self, T: type) !*T {
         var di_interface = self.container.dependencies.get(@typeName(T));
 
         // Return an error if the dependency information is not found.
@@ -306,7 +306,7 @@ const ResolveContext = struct {
     pub fn is_origin(self: *Self, ptr: *anyopaque) bool {
         if (self.resolved_services.items.len == 0) return false;
 
-        return self.resolved_services.items[0].ptr == ptr;
+        return self.resolved_services.getLast().ptr == ptr;
     }
 
     /// Iterator for the linked list in ResolveContext.
