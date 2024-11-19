@@ -10,16 +10,20 @@ const Generic = @import("generics.zig").Generic;
 
 // Example dependency types
 pub const Logger = struct {
-    pub fn init(sp: *service_provider.ServiceProvider, a: std.mem.Allocator) !Logger {
+    sp: *service_provider.ServiceProvider,
+    array: *std.ArrayList(u8),
+
+    pub fn init(
+        sp: *service_provider.ServiceProvider,
+        array: *Generic(std.ArrayList, .{u8}),
+    ) !Logger {
         // Initialize the Logger
-        _ = a;
+        try array.generic_payload.appendNTimes(22, 1_00);
 
-        _ = sp;
-        return Logger{};
-    }
-
-    pub fn factory() Logger {
-        return Logger{};
+        return Logger{
+            .sp = sp,
+            .array = array.generic_payload,
+        };
     }
 
     pub fn deinit(self: *Logger) void {
@@ -45,8 +49,7 @@ pub const Database = struct {
 };
 
 pub fn main() !void {
-    var ha = std.heap.HeapAllocator.init();
-    const allocator = ha.allocator();
+    const allocator = std.heap.page_allocator;
 
     var cont = container.Container.init(allocator);
 
@@ -56,7 +59,6 @@ pub fn main() !void {
     try cont.registerTransient(Logger);
     try cont.registerTransient(std.ArrayList);
     // try cont.registerSingleton(std.ArrayHashMap);
-    try cont.registerTransientWithFactory(Logger.factory);
 
     // Register Database as a non-singleton
     try cont.registerTransient(Database);
@@ -64,24 +66,26 @@ pub fn main() !void {
     var sp = try cont.createServiceProvider();
 
     // Resolve Logger multiple times; the same instance should be returned
-    const logger1 = try sp.resolve(Logger);
-    const logger2 = try sp.resolve(Logger);
+    while (true) {
+        const logger1 = try sp.resolve(Logger);
+        const logger2 = try sp.resolve(Logger);
 
-    const generic_container = try sp.resolve(Generic(std.ArrayList).GenericContainer(.{u8}));
+        try sp.unresolve(logger1);
+        try sp.unresolve(logger2);
+    }
 
-    var array = generic_container.generic_payload;
+    const generic_container = try sp.resolve(Generic(std.ArrayList, .{u8}));
+
+    var array: *std.ArrayList(u8) = generic_container.generic_payload;
     try array.append(22);
     try array.append(44);
+    std.debug.print("{any}\n", .{array.items});
 
-    try sp.unresolve(logger1);
-    try sp.unresolve(logger2);
+    try sp.unresolve(generic_container);
 
-    // std.debug.print("{any} {any}\n", .{ @intFromPtr(logger1), @intFromPtr(logger2) });
     // Resolve Database multiple times; different instances should be returned
     const db1 = try sp.resolve(Database);
     const db2 = try sp.resolve(Database);
-
-    std.debug.print("{any}\n", .{array.items});
 
     _ = db1;
     _ = db2;
@@ -115,6 +119,8 @@ test "check for mem leaks" {
     // Register Database as a non-singleton
     try cont.registerSingleton(Database);
 
+    try cont.registerTransient(std.ArrayList);
+
     var sp = try service_provider.ServiceProvider.init(allocator, &cont);
     defer sp.deinit();
 
@@ -125,4 +131,12 @@ test "check for mem leaks" {
     // Resolve Database multiple times; different instances should be returned
     const db1 = try sp.resolve(Database);
     defer sp.unresolve(db1) catch {};
+
+    const generic_container = try sp.resolve(Generic(std.ArrayList).GenericContainer(.{u8}));
+
+    var array: *std.ArrayList(u8) = generic_container.generic_payload;
+    try array.append(22);
+    try array.append(44);
+
+    defer sp.unresolve(generic_container) catch {};
 }

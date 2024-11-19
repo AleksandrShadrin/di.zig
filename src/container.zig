@@ -9,7 +9,7 @@ const DependencyInfo = @import("dependency.zig").DependencyInfo;
 const IDependencyInfo = @import("dependency.zig").IDependencyInfo;
 const LifeCycle = @import("dependency.zig").LifeCycle;
 
-const Generic = @import("generics.zig").Generic;
+const GenericFnWrapper = @import("generics.zig").GenericFnWrapper;
 
 const ContainerError = error{ ServiceNotFound, TransitiveDependency, LifeCycleError };
 
@@ -63,18 +63,18 @@ pub const Container = struct {
             .Type => {
                 const dep_info_ptr = try self
                     .allocator
-                    .create(DependencyInfo(*dep, false));
+                    .create(DependencyInfo(*dep));
 
-                dep_info_ptr.* = try DependencyInfo(*dep, false).init(life_cycle);
+                dep_info_ptr.* = try DependencyInfo(*dep).init(life_cycle, false);
 
                 try self.dependencies.put(dep_info_ptr.name, dep_info_ptr.getInterface());
             },
             .Fn => {
                 const dep_info_ptr = try self
                     .allocator
-                    .create(DependencyInfo(*Generic(dep), true));
+                    .create(DependencyInfo(*GenericFnWrapper(dep)));
 
-                dep_info_ptr.* = try DependencyInfo(*Generic(dep), true).init(life_cycle);
+                dep_info_ptr.* = try DependencyInfo(*GenericFnWrapper(dep)).init(life_cycle, true);
                 dep_info_ptr.*.name = utilities.genericName(dep);
 
                 try self.dependencies.put(dep_info_ptr.name, dep_info_ptr.getInterface());
@@ -87,10 +87,10 @@ pub const Container = struct {
         const T = utilities.getReturnType(factory);
         const dep_info_ptr = try self
             .allocator
-            .create(DependencyInfo(*T, false));
+            .create(DependencyInfo(*T));
 
         const builder = try utilities.getBuilder(T, factory);
-        dep_info_ptr.* = DependencyInfo(*T, false).initWithBuilder(builder, life_cycle);
+        dep_info_ptr.* = DependencyInfo(*T).initWithBuilder(builder, life_cycle);
 
         try self.dependencies.put(dep_info_ptr.name, dep_info_ptr.getInterface());
     }
@@ -117,6 +117,8 @@ pub const Container = struct {
             for (di.getDependencies()) |dep| {
                 try self.checkDependenciesLifeCycles(di);
                 try self.checkTransitiveDependencies(di, dep.name);
+
+                di.verify();
             }
         }
     }

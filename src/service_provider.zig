@@ -9,6 +9,7 @@ const generic = @import("generics.zig");
 const ServiceProviderError = error{
     NoResolveContextFound, // Indicates that no resolve context was found.
     ServiceNotFound, // Indicates that the requested service was not found.
+    NoActiveScope,
 };
 
 // Represents information about a dependency.
@@ -62,10 +63,9 @@ pub const ServiceProvider = struct {
             @compileError("Type " ++ @typeName(@TypeOf(T)) ++ " must be a pointer type for unresolve.");
 
         const dereferenced_type = utilities.deref(@TypeOf(T));
-        const dep_info = self.container.dependencies.get(@typeName(dereferenced_type));
 
         // Return an error if the dependency information is not found.
-        if (dep_info == null)
+        if (!self.container.dependencies.contains(@typeName(dereferenced_type)))
             return ServiceProviderError.ServiceNotFound;
 
         // Iterate through all resolve contexts to find the origin of T.
@@ -103,11 +103,22 @@ pub const ServiceProvider = struct {
         }
     }
 
+    fn initResolveContext(self: *Self) void {
+        self.resolve_ctx = ResolveContext.init(self.allocator);
+    }
+
     /// Resolves a dependency of the specified type.
+    ///
+    /// Return A pointer to the resolved dependency.
+    pub fn resolve(self: *Self, comptime T: type) !*T {
+        return self.inner_resolve(null, T);
+    }
+
+    /// Resolve implementation.
     ///
     /// T The type of the dependency to resolve. Must not be a pointer type.
     /// Return A pointer to the resolved dependency.
-    pub fn resolve(self: *Self, comptime T: type) !*T {
+    fn inner_resolve(self: *Self, scope: ?*Scope, comptime T: type) !*T {
         // Ensure that T is not a pointer type at compile time.
         if (@typeInfo(T) == .Pointer)
             @compileError("Type " ++ @typeName(T) ++ " should not be a pointer type for resolve.");
@@ -119,14 +130,15 @@ pub const ServiceProvider = struct {
 
         // If there is no current resolve context, create one.
         if (self.resolve_ctx == null) {
-            self.resolve_ctx = ResolveContext.init(self.allocator);
+            self.initResolveContext();
+
             defer {
                 // Clear the resolve context after resolution.
                 if (self.resolve_ctx != null) self.resolve_ctx = null;
             }
 
             // Perform the actual resolution.
-            const resolved = try self.inner_resolve(T);
+            const resolved = try self.resolve_strategy(scope, T);
 
             // Add the resolve context to the container.
             try self.resolve_ctx_container.append(self.resolve_ctx.?);
@@ -135,14 +147,14 @@ pub const ServiceProvider = struct {
         }
 
         // Perform the actual resolution within the existing context.
-        return self.inner_resolve(T);
+        return self.resolve_strategy(scope, T);
     }
 
     /// Internal function to handle the resolution logic.
     ///
     /// T The type of the dependency to resolve.
     /// Return An instance of the resolved dependency.
-    fn inner_resolve(self: *Self, T: type) getResolveType(T) {
+    fn resolve_strategy(self: *Self, scope: ?*Scope, T: type) getResolveType(T) {
         if (T == std.mem.Allocator)
             return self.allocator;
 
@@ -153,28 +165,23 @@ pub const ServiceProvider = struct {
         const dereferenced_type: type = utilities.deref(T);
 
         if (generic.isGeneric(dereferenced_type)) {
-            return try self.buildGenericType(dereferenced_type);
+            return try self.buildGenericType(scope, dereferenced_type);
         } else {
-            return try self.buildSimpleType(dereferenced_type);
+            return try self.buildSimpleType(scope, dereferenced_type);
         }
     }
 
-    fn buildGenericType(self: *Self, T: type) !*T {
+    fn buildGenericType(self: *Self, scope: ?*Scope, T: type) !*T {
         const inner_type: type = generic.getGenericType(T);
         const generic_name = generic.getName(T);
 
-        const generic_di_interface = self.container.dependencies.get(generic_name);
-
-        if (generic_di_interface == null) {
-            // return try self.buildSimpleType(inner_type);
-            return ServiceProviderError.ServiceNotFound;
-        }
+        const generic_di_interface = self.container.dependencies.get(generic_name) orelse return ServiceProviderError.ServiceNotFound;
 
         const concrete_di_interface = self.container.dependencies.get(@typeName(inner_type));
         const container_di_interface = self.container.dependencies.get(@typeName(T));
 
         if (concrete_di_interface == null) {
-            try switch (generic_di_interface.?.life_cycle) {
+            try switch (generic_di_interface.life_cycle) {
                 .singleton => self.container.registerSingleton(inner_type),
                 .scoped => self.container.registerScoped(inner_type),
                 .transient => self.container.registerTransient(inner_type),
@@ -182,68 +189,101 @@ pub const ServiceProvider = struct {
         }
 
         if (container_di_interface == null) {
-            try switch (generic_di_interface.?.life_cycle) {
+            try switch (generic_di_interface.life_cycle) {
                 .singleton => self.container.registerSingleton(T),
                 .scoped => self.container.registerScoped(T),
                 .transient => self.container.registerTransient(T),
             };
         }
 
-        return try self.buildSimpleType(T);
+        return try self.buildSimpleType(scope, T);
     }
 
-    fn buildSimpleType(self: *Self, T: type) !*T {
-        var di_interface = self.container.dependencies.get(@typeName(T));
-
-        // Return an error if the dependency information is not found.
-        if (di_interface == null) {
-            return ServiceProviderError.ServiceNotFound;
-        }
+    fn buildSimpleType(self: *Self, scope: ?*Scope, T: type) !*T {
+        var di_interface = self.container.dependencies.get(@typeName(T)) orelse return ServiceProviderError.ServiceNotFound;
 
         // Cast the dependency interface to the appropriate type.
-        const dep_info: *DependencyInfo(*T, false) = @ptrCast(@alignCast(di_interface.?.ptr));
+        const dep_info: *DependencyInfo(*T) = @ptrCast(@alignCast(di_interface.ptr));
 
         switch (dep_info.life_cycle) {
             .transient => {
                 const ptr = try self.allocator.create(T);
-                ptr.* = try self.build(T, dep_info);
+                ptr.* = try self.build(scope, T, dep_info);
 
-                try self.resolve_ctx.?.append(ptr, di_interface.?);
+                try self.resolve_ctx.?.append(ptr, di_interface);
 
                 return ptr;
             },
             .singleton => {
                 for (self.singleton.items) |*r| {
-                    if (std.mem.eql(u8, r.info.getName(), di_interface.?.getName())) {
+                    if (std.mem.eql(u8, r.info.getName(), di_interface.getName())) {
                         const ptr: *T = @ptrCast(@alignCast(r.ptr));
                         return ptr;
                     }
                 }
 
                 const ptr = try self.allocator.create(T);
-                ptr.* = try self.build(T, dep_info);
+                ptr.* = try self.build(scope, T, dep_info);
 
-                try self.singleton.append(.{ .info = di_interface.?, .ptr = ptr });
+                try self.singleton.append(.{ .info = di_interface, .ptr = ptr });
 
                 return ptr;
             },
-            .scoped => {},
+            .scoped => {
+                if (scope == undefined) {
+                    return ServiceProviderError.NoActiveScope;
+                }
+
+                for (scope.?.scope.items) |*r| {
+                    if (std.mem.eql(u8, r.info.getName(), di_interface.getName())) {
+                        const ptr: *T = @ptrCast(@alignCast(r.ptr));
+                        return ptr;
+                    }
+                }
+
+                const ptr = try self.allocator.create(T);
+                ptr.* = try self.build(scope, T, dep_info);
+
+                try scope.?.scope.append(.{ .info = di_interface, .ptr = ptr });
+
+                return ptr;
+            },
         }
 
         unreachable;
     }
 
-    fn build(self: *Self, comptime T: type, dep_info: *DependencyInfo(*T, false)) !T {
-        var t: T = undefined;
-
+    fn build(self: *Self, scope: ?*Scope, comptime T: type, dep_info: *DependencyInfo(*T)) !T {
         if (dep_info.builder == null) {
-            var b = ServiceProviderBuilder(T).createBuilder();
-            t = try b.build(self);
+            if (scope == null) {
+                var b = ServiceProviderBuilder(T).createBuilder();
+                return try b.buildFn(self);
+            } else {
+                var b = ScopeBuilder(T).createBuilder();
+                return try b.buildFn(scope.?);
+            }
         } else {
-            t = try dep_info.builder.?.build(self);
+            return try dep_info.builder.?.build(self);
         }
+    }
+};
 
-        return t;
+pub const Scope = struct {
+    const Self = @This();
+
+    sp: *ServiceProvider,
+    scope: std.ArrayList(Resolved),
+    allocator: std.mem.Allocator,
+
+    pub fn init(sp: *ServiceProvider, allocator: std.mem.Allocator) Self {
+        return Self{
+            .sp = sp,
+            .scope = std.ArrayList(Resolved).init(allocator),
+        };
+    }
+
+    pub fn resolve(self: *Self, comptime T: type) !*T {
+        return self.sp.inner_resolve(self, T);
     }
 };
 
@@ -341,7 +381,7 @@ const ComptimeBuilderError = error{
 ///
 /// T The type to build.
 /// Return A struct with `buildFn` and `createBuilder` methods.
-pub fn ServiceProviderBuilder(comptime T: type) type {
+fn ServiceProviderBuilder(comptime T: type) type {
     return struct {
         /// Builds an instance of type `T` using the provided ServiceProvider.
         ///
@@ -360,7 +400,53 @@ pub fn ServiceProviderBuilder(comptime T: type) type {
 
             // Resolve each dependency and populate the tuple.
             inline for (arg_types, 0..) |arg_type, i| {
-                tuple[i] = try sp.inner_resolve(utilities.deref(arg_type));
+                tuple[i] = try sp.resolve_strategy(null, utilities.deref(arg_type));
+            }
+
+            // Call the init function with the resolved dependencies.
+            if (@typeInfo(utilities.getReturnType(T.init)) == .ErrorUnion) {
+                return try @call(.auto, T.init, tuple);
+            }
+
+            return @call(.auto, T.init, tuple);
+        }
+
+        /// Creates a Builder instance for type `T` using the `buildFn`.
+        ///
+        /// Return A Builder configured for type `T`.
+        pub fn createBuilder() Builder(T) {
+            return Builder(T).fromFn(@This().buildFn);
+        }
+    };
+}
+
+/// A compile-time builder for creating dependency instances.
+///
+/// This builder inspects the `init` function of the type `T` and resolves its dependencies
+/// accordingly.
+///
+/// T The type to build.
+/// Return A struct with `buildFn` and `createBuilder` methods.
+fn ScopeBuilder(comptime T: type) type {
+    return struct {
+        /// Builds an instance of type `T` using the provided ServiceProvider.
+        ///
+        /// sp The ServiceProvider to use for resolving dependencies.
+        /// Return An instance of type `T` or an error if building fails.
+        pub fn buildFn(ctx: *anyopaque) !T {
+            const scope: *Scope = @ptrCast(@alignCast(ctx));
+            // Ensure that type T has an init function.
+            if (!utilities.hasInit(T))
+                return ComptimeBuilderError.NoInitFn;
+
+            const arg_types = utilities.getInitArgs(T);
+
+            // Create a tuple to hold resolved dependencies.
+            var tuple: std.meta.Tuple(arg_types) = undefined;
+
+            // Resolve each dependency and populate the tuple.
+            inline for (arg_types, 0..) |arg_type, i| {
+                tuple[i] = try scope.sp.resolve_strategy(scope, utilities.deref(arg_type));
             }
 
             // Call the init function with the resolved dependencies.

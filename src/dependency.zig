@@ -8,6 +8,8 @@ const ServiceProvider = service_provider.ServiceProvider;
 // Import Builder from builder.zig
 const Builder = builder_module.Builder;
 
+const generics = @import("generics.zig");
+
 // Define possible dependency errors
 const DependencyError = error{
     DependencyShouldBeReference,
@@ -33,6 +35,8 @@ pub const IDependencyInfo = struct {
     get_dependencies_fn: *const fn (ctx: *anyopaque) []const Dependency,
     get_name_fn: *const fn (ctx: *anyopaque) []const u8,
     deinit_fn: *const fn (ctx: *anyopaque, std.mem.Allocator) void,
+    verify_fn: *const fn (ctx: *anyopaque) void,
+    is_verified_fn: *const fn (ctx: *anyopaque) bool,
 
     life_cycle: LifeCycle,
 
@@ -50,17 +54,21 @@ pub const IDependencyInfo = struct {
     pub fn deinit(self: *IDependencyInfo, ptr: *anyopaque, allocator: std.mem.Allocator) void {
         return self.deinit_fn(ptr, allocator);
     }
+
+    pub fn verify(self: *IDependencyInfo) void {
+        self.verify_fn(self.ptr);
+    }
+
+    pub fn isVerified(self: *IDependencyInfo) void {
+        return self.is_verified_fn(self.ptr);
+    }
 };
 
 // Function to generate DependencyInfo for a given type `T`
-pub fn DependencyInfo(comptime T: type, comptime is_generic: bool) type {
+pub fn DependencyInfo(comptime T: type) type {
     const DerefT = utilities.deref(T);
 
-    const dep_count: usize = if (is_generic) 0 else utilities.getInitArgs(DerefT).len;
-
-    if (dep_count == 0 and
-        !is_generic)
-        @compileError(@typeName(DerefT) ++ " hasn't init fn");
+    const dep_count: usize = if (utilities.hasInit(DerefT)) utilities.getInitArgs(DerefT).len else 0;
 
     return struct {
         const Self = @This();
@@ -73,8 +81,10 @@ pub fn DependencyInfo(comptime T: type, comptime is_generic: bool) type {
 
         life_cycle: LifeCycle,
 
+        verified: bool = false,
+
         /// Initializes the DependencyInfo with a lifecycle
-        pub fn init(life_cycle: LifeCycle) !Self {
+        pub fn init(life_cycle: LifeCycle, comptime is_generic: bool) !Self {
             var self = Self{
                 .with_comptime_builder = true,
                 .life_cycle = life_cycle,
@@ -85,14 +95,18 @@ pub fn DependencyInfo(comptime T: type, comptime is_generic: bool) type {
                 const dependencies = utilities.getInitArgs(DerefT);
 
                 inline for (dependencies, 0..) |dep, i| {
-                    self.dep_array[i] = Dependency{ .name = @typeName(utilities.deref(dep)) };
+                    const deref_dep = utilities.deref(dep);
+
+                    if (generics.isGeneric(deref_dep)) {
+                        self.dep_array[i] = Dependency{ .name = generics.getName(deref_dep) };
+                    } else {
+                        self.dep_array[i] = Dependency{ .name = @typeName(deref_dep) };
+                    }
 
                     // Ensure that the dependency should be a reference
                     if (utilities.deref(dep) == dep and
                         dep != std.mem.Allocator)
-                    {
-                        return DependencyError.DependencyShouldBeReference;
-                    }
+                        @compileError(@typeName(DerefT) ++ " dependency " ++ @typeName(dep) ++ " should be a reference");
                 }
             }
 
@@ -118,11 +132,13 @@ pub fn DependencyInfo(comptime T: type, comptime is_generic: bool) type {
                 .deinit_fn = Self.deinit,
                 .life_cycle = self.life_cycle,
                 .destroy_fn = Self.destroy,
+                .verify_fn = Self.verify,
+                .is_verified_fn = Self.isVerified,
             };
         }
 
         /// Retrieves dependencies based on the builder type
-        pub fn getDependencies(ctx: *anyopaque) []const Dependency {
+        fn getDependencies(ctx: *anyopaque) []const Dependency {
             const self: *Self = @ptrCast(@alignCast(ctx));
 
             if (!self.with_comptime_builder) {
@@ -133,13 +149,13 @@ pub fn DependencyInfo(comptime T: type, comptime is_generic: bool) type {
         }
 
         /// Retrieves the name of the dependency
-        pub fn getName(ctx: *anyopaque) []const u8 {
+        fn getName(ctx: *anyopaque) []const u8 {
             const self: *Self = @ptrCast(@alignCast(ctx));
             return self.name;
         }
 
         /// Deinitializes the dependency if necessary
-        pub fn deinit(ptr: *anyopaque, allocator: std.mem.Allocator) void {
+        fn deinit(ptr: *anyopaque, allocator: std.mem.Allocator) void {
             const item: *DerefT = @ptrCast(@alignCast(ptr));
 
             Destructor(DerefT).deinit(item) catch |err| {
@@ -149,9 +165,19 @@ pub fn DependencyInfo(comptime T: type, comptime is_generic: bool) type {
             allocator.destroy(item);
         }
 
-        pub fn destroy(ctx: *anyopaque, allocator: std.mem.Allocator) void {
+        fn destroy(ctx: *anyopaque, allocator: std.mem.Allocator) void {
             const self: *Self = @ptrCast(@alignCast(ctx));
             allocator.destroy(self);
+        }
+
+        fn verify(ctx: *anyopaque) void {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            self.verified = true;
+        }
+
+        fn isVerified(ctx: *anyopaque) bool {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            return self.verified;
         }
     };
 }
@@ -181,3 +207,5 @@ fn Destructor(comptime T: type) type {
         }
     };
 }
+
+const DependencyInfoConfiguration = struct { is_generic: bool, with_custom_builder: bool };
