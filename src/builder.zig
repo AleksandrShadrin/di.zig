@@ -7,22 +7,22 @@ pub fn Builder(comptime T: type) type {
     return struct {
         const Self = @This();
 
-        buildFn: *const fn (sp: *anyopaque) anyerror!T,
+        buildFn: *const fn (ctx: *anyopaque) anyerror!T,
 
-        pub fn build(self: *Self, sp: *anyopaque) !T {
-            return try self.buildFn(sp);
+        pub fn build(self: *Self, ctx: *anyopaque) !T {
+            return try self.buildFn(ctx);
         }
 
-        pub fn fromFn(f: *const fn (sp: *anyopaque) anyerror!T) Self {
+        pub fn fromFn(f: *const fn (ctx: *anyopaque) anyerror!T) Self {
             return .{
                 .buildFn = f,
             };
         }
 
-        pub fn fromFnWithNoError(comptime f: fn (sp: *anyopaque) T) Self {
+        pub fn fromFnWithNoError(comptime f: fn (ctx: *anyopaque) T) Self {
             const S = struct {
-                pub fn wrapper(sp: *anyopaque) !T {
-                    return f(sp);
+                pub fn wrapper(ctx: *anyopaque) !T {
+                    return f(ctx);
                 }
             };
 

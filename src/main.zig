@@ -57,7 +57,7 @@ pub fn main() !void {
 
     // Register Logger as a singleton
     try cont.registerTransient(Logger);
-    try cont.registerTransient(std.ArrayList);
+    try cont.registerScoped(std.ArrayList);
     // try cont.registerSingleton(std.ArrayHashMap);
 
     // Register Database as a non-singleton
@@ -66,26 +66,26 @@ pub fn main() !void {
     var sp = try cont.createServiceProvider();
 
     // Resolve Logger multiple times; the same instance should be returned
-    while (true) {
-        const logger1 = try sp.resolve(Logger);
-        const logger2 = try sp.resolve(Logger);
+    // while (true) {
+    //     const logger1 = try sp.resolve(Logger);
+    //     const logger2 = try sp.resolve(Logger);
 
-        try sp.unresolve(logger1);
-        try sp.unresolve(logger2);
-    }
+    //     try sp.unresolve(logger1);
+    //     try sp.unresolve(logger2);
+    // }
 
-    const generic_container = try sp.resolve(Generic(std.ArrayList, .{u8}));
+    var scope = sp.initScope();
+    defer scope.deinit();
+
+    const generic_container = try scope.resolve(Generic(std.ArrayList, .{u8}));
 
     var array: *std.ArrayList(u8) = generic_container.generic_payload;
     try array.append(22);
     try array.append(44);
-    std.debug.print("{any}\n", .{array.items});
-
-    try sp.unresolve(generic_container);
 
     // Resolve Database multiple times; different instances should be returned
-    const db1 = try sp.resolve(Database);
-    const db2 = try sp.resolve(Database);
+    const db1 = try scope.resolve(Database);
+    const db2 = try scope.resolve(Database);
 
     _ = db1;
     _ = db2;
@@ -115,28 +115,30 @@ test "check for mem leaks" {
     defer cont.deinit();
 
     // Register Logger as a singleton
-    try cont.registerSingleton(Logger);
+    try cont.registerTransient(Logger);
     // Register Database as a non-singleton
-    try cont.registerSingleton(Database);
+    try cont.registerTransient(Database);
 
-    try cont.registerTransient(std.ArrayList);
+    try cont.registerScoped(std.ArrayList);
 
-    var sp = try service_provider.ServiceProvider.init(allocator, &cont);
+    var sp = service_provider.ServiceProvider.init(allocator, &cont);
     defer sp.deinit();
 
+    var scope = sp.initScope();
+
     // Resolve Logger multiple times; the same instance should be returned
-    const logger1 = try sp.resolve(Logger);
-    defer sp.unresolve(logger1) catch {};
+    const logger1 = try scope.resolve(Logger);
+    sp.unresolve(logger1) catch {};
 
     // Resolve Database multiple times; different instances should be returned
-    const db1 = try sp.resolve(Database);
-    defer sp.unresolve(db1) catch {};
+    const db1 = try scope.resolve(Database);
+    sp.unresolve(db1) catch {};
 
-    const generic_container = try sp.resolve(Generic(std.ArrayList).GenericContainer(.{u8}));
+    const generic_container = try scope.resolve(Generic(std.ArrayList, .{u8}));
 
     var array: *std.ArrayList(u8) = generic_container.generic_payload;
     try array.append(22);
     try array.append(44);
 
-    defer sp.unresolve(generic_container) catch {};
+    scope.deinit();
 }
