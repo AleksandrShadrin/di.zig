@@ -59,7 +59,7 @@ pub const IDependencyInfo = struct {
         self.verify_fn(self.ptr);
     }
 
-    pub fn isVerified(self: *IDependencyInfo) void {
+    pub fn isVerified(self: *IDependencyInfo) bool {
         return self.is_verified_fn(self.ptr);
     }
 };

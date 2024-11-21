@@ -15,16 +15,13 @@ pub const Logger = struct {
 
     pub fn init(
         sp: *service_provider.ServiceProvider,
-        array: *Generic(std.ArrayList, .{u8}),
+        array: *Logger,
     ) !Logger {
         _ = array;
-        _ = sp;
 
-        return er.c;
-
-        // return Logger{
-        //     .sp = sp,
-        // };
+        return Logger{
+            .sp = sp,
+        };
     }
 
     pub fn do(self: *Logger) !void {
@@ -66,7 +63,7 @@ pub fn main() !void {
 
     // Register Logger as a singleton
     try cont.registerTransient(Logger);
-    try cont.registerScoped(std.ArrayList);
+    try cont.registerSingleton(std.ArrayList);
     // try cont.registerSingleton(std.ArrayHashMap);
 
     // Register Database as a non-singleton
@@ -79,9 +76,7 @@ pub fn main() !void {
 
     // Resolve Logger multiple times; the same instance should be returned
     while (true) {
-        const logger1 = scope.resolve(Logger) catch {
-            continue;
-        };
+        const logger1 = try scope.resolve(Logger);
 
         try sp.unresolve(logger1);
     }
