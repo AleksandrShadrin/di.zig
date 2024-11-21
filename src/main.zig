@@ -8,22 +8,31 @@ const builder = @import("builder.zig");
 
 const Generic = @import("generics.zig").Generic;
 
+const er = error{c};
 // Example dependency types
 pub const Logger = struct {
     sp: *service_provider.ServiceProvider,
-    array: *std.ArrayList(u8),
 
     pub fn init(
         sp: *service_provider.ServiceProvider,
         array: *Generic(std.ArrayList, .{u8}),
     ) !Logger {
-        // Initialize the Logger
-        try array.generic_payload.appendNTimes(22, 1_00);
+        _ = array;
+        _ = sp;
 
-        return Logger{
-            .sp = sp,
-            .array = array.generic_payload,
-        };
+        return er.c;
+
+        // return Logger{
+        //     .sp = sp,
+        // };
+    }
+
+    pub fn do(self: *Logger) !void {
+        var scope = self.sp.initScope();
+        defer scope.deinit();
+
+        var array: *std.ArrayList(u8) = (try scope.resolve(Generic(std.ArrayList, .{u8}))).generic_payload;
+        try array.appendNTimes(22, 10000_000);
     }
 
     pub fn deinit(self: *Logger) void {
@@ -65,17 +74,17 @@ pub fn main() !void {
 
     var sp = try cont.createServiceProvider();
 
-    // Resolve Logger multiple times; the same instance should be returned
-    // while (true) {
-    //     const logger1 = try sp.resolve(Logger);
-    //     const logger2 = try sp.resolve(Logger);
-
-    //     try sp.unresolve(logger1);
-    //     try sp.unresolve(logger2);
-    // }
-
     var scope = sp.initScope();
     defer scope.deinit();
+
+    // Resolve Logger multiple times; the same instance should be returned
+    while (true) {
+        const logger1 = scope.resolve(Logger) catch {
+            continue;
+        };
+
+        try sp.unresolve(logger1);
+    }
 
     const generic_container = try scope.resolve(Generic(std.ArrayList, .{u8}));
 
@@ -129,6 +138,9 @@ test "check for mem leaks" {
     // Resolve Logger multiple times; the same instance should be returned
     const logger1 = try scope.resolve(Logger);
     sp.unresolve(logger1) catch {};
+
+    const logger2 = try scope.resolve(Logger);
+    sp.unresolve(logger2) catch {};
 
     // Resolve Database multiple times; different instances should be returned
     const db1 = try scope.resolve(Database);

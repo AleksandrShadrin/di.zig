@@ -60,7 +60,6 @@ pub const ServiceProvider = struct {
 
         // Iterate through all singleton instances and deinitialize them.
         for (self.singleton.items) |*r| {
-            std.debug.print("name {s}\n", .{r.info.?.getName()});
             r.deinit();
         }
 
@@ -141,9 +140,7 @@ pub const ServiceProvider = struct {
         };
 
         // Perform the actual resolution using the internal resolve method.
-        const resolved = try self.inner_resolve(&ctx, T);
-
-        return resolved;
+        return try self.inner_resolve(&ctx, T);
     }
 
     /// Internal method responsible for the actual resolution of a dependency.
@@ -172,7 +169,8 @@ pub const ServiceProvider = struct {
         const resolved = try self.resolve_strategy(ctx, T);
 
         // Append the fully resolved context to the list of resolve roots.
-        try self.resolve_roots.append(ctx.active_root.?);
+        if (ctx.active_root.?.info.?.life_cycle == .transient)
+            try self.resolve_roots.append(ctx.active_root.?);
 
         return resolved;
     }
@@ -271,6 +269,7 @@ pub const ServiceProvider = struct {
         errdefer {
             if (ctx.active_root != null) {
                 ctx.active_root.?.deinit();
+
                 ctx.active_root = null;
             }
             ctx.current_resolve = null;
@@ -298,8 +297,10 @@ pub const ServiceProvider = struct {
         switch (dep_info.life_cycle) {
             .transient => {
                 // Transient services always create a new instance upon resolution.
+                const value = try self.build(ctx, T, dep_info);
                 const ptr = try self.allocator.create(T);
-                ptr.* = try self.build(ctx, T, dep_info);
+
+                ptr.* = value;
                 new_current.ptr = ptr;
             },
             .singleton => {
@@ -314,8 +315,11 @@ pub const ServiceProvider = struct {
 
                 // If no existing singleton, create and store it.
                 if (ptr == null) {
+                    const value = try self.build(ctx, T, dep_info);
+
                     ptr = try self.allocator.create(T);
-                    ptr.?.* = try self.build(ctx, T, dep_info);
+                    ptr.?.* = value;
+
                     new_current.ptr = ptr;
                     try self.singleton.append(new_current.*);
                 } else {
@@ -339,9 +343,13 @@ pub const ServiceProvider = struct {
 
                 // If no existing scoped instance, create and store it within the current scope.
                 if (ptr == null) {
+                    const value = try self.build(ctx, T, dep_info);
+
                     ptr = try self.allocator.create(T);
-                    ptr.?.* = try self.build(ctx, T, dep_info);
+                    ptr.?.* = value;
+
                     new_current.ptr = ptr;
+
                     try ctx.scope.?.scope.append(new_current.*);
                 } else {
                     new_current.ptr = ptr;
