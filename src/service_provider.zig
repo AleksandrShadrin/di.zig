@@ -295,6 +295,7 @@ pub const ServiceProvider = struct {
         new_current.info = di_interface;
 
         try ctx.active_root.?.checkCycles(null);
+        defer new_current.info.?.verify();
 
         // Instantiate the dependency based on its lifecycle configuration.
         switch (dep_info.life_cycle) {
@@ -493,16 +494,12 @@ const Resolved = struct {
     }
 
     pub fn checkCycles(self: *Self, ctx: ?*Self) !void {
-        std.debug.print("check \n", .{});
-
         if (self.info.?.isVerified())
             return;
 
         for (self.child.items) |*child| {
             if (child.info == null)
                 continue;
-
-            std.debug.print("check {s} {s}\n", .{ child.info.?.getName(), self.info.?.getName() });
 
             try child.checkCycles(self);
 
@@ -511,8 +508,6 @@ const Resolved = struct {
             }
 
             try child.checkCycles(null);
-
-            std.debug.print("check {s} {s}\n", .{ child.info.?.getName(), ctx.?.info.?.getName() });
 
             if (std.mem.eql(u8, child.info.?.getName(), ctx.?.info.?.getName())) {
                 return ServiceProviderError.CycleDependency;

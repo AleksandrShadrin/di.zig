@@ -142,9 +142,6 @@ pub const Container = struct {
                 try self.checkDependenciesLifeCycles(di);
                 // Check for transitive dependency cycles
                 try self.checkTransitiveDependencies(di, dep.name, &visited);
-
-                // Verify the dependency information is valid
-                di.verify();
             }
         }
     }

@@ -15,7 +15,7 @@ pub const Logger = struct {
 
     pub fn init(
         sp: *service_provider.ServiceProvider,
-        array: *Logger,
+        array: *Generic(std.ArrayList, .{u8}),
     ) !Logger {
         _ = array;
 
