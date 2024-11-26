@@ -471,6 +471,7 @@ pub const Scope = struct {
             r.deinit();
         }
 
+        self.sp.deinit();
         self.scope.deinit();
     }
 };
