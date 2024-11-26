@@ -34,6 +34,8 @@ pub const ServiceProvider = struct {
 
     singleton: std.ArrayList(Resolved), // Stores instances of singleton services managed by the provider.
 
+    scope: ?*Scope = null,
+
     /// Initializes a new ServiceProvider instance.
     ///
     /// Parameters:
@@ -85,7 +87,7 @@ pub const ServiceProvider = struct {
         const dereferenced_type = utilities.deref(@TypeOf(T));
 
         // Fetch the dependency information from the container.
-        const dep_interface = self.container.dependencies.get(@typeName(dereferenced_type)) orelse return ServiceProviderError.ServiceNotFound;
+        const dep_interface = self.container.getDependencyInfo(dereferenced_type) orelse return ServiceProviderError.ServiceNotFound;
 
         // Only dependencies with a transient lifecycle are eligible for unresolution.
         if (dep_interface.life_cycle != .transient)
@@ -219,14 +221,13 @@ pub const ServiceProvider = struct {
     /// - An error if the resolution process fails.
     fn buildGenericType(self: *Self, ctx: *BuilderContext, T: type) !*T {
         const inner_type: type = generic.getGenericType(T);
-        const generic_name = generic.getName(T);
 
         // Retrieve the dependency interface for the generic type from the container.
-        const generic_di_interface = self.container.dependencies.get(generic_name) orelse return ServiceProviderError.ServiceNotFound;
+        const generic_di_interface = self.container.getGenericWrapper(T) orelse return ServiceProviderError.ServiceNotFound;
 
         // Check if the inner type and the generic type are already registered.
-        const concrete_di_interface = self.container.dependencies.get(@typeName(inner_type));
-        const container_di_interface = self.container.dependencies.get(@typeName(T));
+        const concrete_di_interface = self.container.getDependencyInfo(inner_type);
+        const container_di_interface = self.container.getDependencyInfo(T);
 
         // If the inner type is not registered, register it based on its lifecycle.
         if (concrete_di_interface == null) {
@@ -264,7 +265,7 @@ pub const ServiceProvider = struct {
     /// - An error if the building process fails.
     fn buildSimpleType(self: *Self, ctx: *BuilderContext, T: type) !*T {
         // Retrieve the dependency interface information from the container.
-        var di_interface = self.container.dependencies.get(@typeName(T)) orelse return ServiceProviderError.ServiceNotFound;
+        var di_interface = self.container.getDependencyInfo(T) orelse return ServiceProviderError.ServiceNotFound;
 
         // Ensure that the resolution context is properly cleaned up in case of failure.
         errdefer {
@@ -322,24 +323,26 @@ pub const ServiceProvider = struct {
                     const value = try self.build(ctx, T, dep_info);
 
                     ptr = try self.allocator.create(T);
+
                     ptr.?.* = value;
 
                     new_current.ptr = ptr;
                     try self.singleton.append(new_current.*);
+                    errdefer self.allocator.destroy(ptr.?);
                 } else {
                     new_current.ptr = ptr;
                 }
             },
             .scoped => {
                 // Scoped services require an active scope to be resolved within.
-                if (ctx.scope == null) {
+                if (self.scope == null) {
                     return ServiceProviderError.NoActiveScope;
                 }
 
                 var ptr: ?*T = null;
 
                 // Check if a scoped instance already exists within the current scope.
-                for (ctx.scope.?.scope.items) |*r| {
+                for (self.scope.?.scope.items) |*r| {
                     if (std.mem.eql(u8, r.info.?.getName(), di_interface.getName())) {
                         ptr = @ptrCast(@alignCast(r.ptr));
                     }
@@ -350,11 +353,13 @@ pub const ServiceProvider = struct {
                     const value = try self.build(ctx, T, dep_info);
 
                     ptr = try self.allocator.create(T);
+
                     ptr.?.* = value;
 
                     new_current.ptr = ptr;
 
-                    try ctx.scope.?.scope.append(new_current.*);
+                    try self.scope.?.scope.append(new_current.*);
+                    errdefer self.allocator.destroy(ptr.?);
                 } else {
                     new_current.ptr = ptr;
                 }
@@ -398,7 +403,11 @@ pub const ServiceProvider = struct {
     }
 
     pub fn initScope(self: *Self) Scope {
-        return Scope.init(self, self.allocator);
+        return Scope.init(self.clone(), self.allocator);
+    }
+
+    fn clone(self: *Self) Self {
+        return Self.init(self.allocator, self.container);
     }
 };
 
@@ -412,7 +421,7 @@ pub const ScopeErrors = error{
 pub const Scope = struct {
     const Self = @This();
 
-    sp: *ServiceProvider, // Reference to the parent ServiceProvider managing this scope.
+    sp: ServiceProvider, // Reference to the parent ServiceProvider managing this scope.
     scope: std.ArrayList(Resolved), // List of dependencies instantiated within this scope.
     allocator: std.mem.Allocator, // Allocator for memory operations within the scope.
 
@@ -424,7 +433,7 @@ pub const Scope = struct {
     ///
     /// Returns:
     /// - A new instance of Scope.
-    pub fn init(sp: *ServiceProvider, allocator: std.mem.Allocator) Self {
+    pub fn init(sp: ServiceProvider, allocator: std.mem.Allocator) Self {
         return Self{
             .sp = sp,
             .scope = std.ArrayList(Resolved).init(allocator),
@@ -446,8 +455,7 @@ pub const Scope = struct {
     pub fn resolve(self: *Self, comptime T: type) !*T {
         // Initialize a new BuilderContext specific to this scope's resolution.
         var ctx = BuilderContext{
-            .sp = self.sp,
-            .scope = self,
+            .sp = &self.sp,
             .active_root = Resolved.empty(self.allocator),
             .current_resolve = null,
         };
@@ -565,7 +573,6 @@ const BuilderContext = struct {
     const Self = @This();
 
     sp: *ServiceProvider, // Reference to the ServiceProvider responsible for resolving dependencies.
-    scope: ?*Scope, // Optional pointer to a Scope structure for resolving scoped dependencies.
     active_root: ?Resolved, // Root of the current resolution context, tracking the top-level dependency.
     current_resolve: ?*Resolved, // Pointer to the currently active Resolved context during the resolution process.
 
@@ -578,10 +585,9 @@ const BuilderContext = struct {
     ///
     /// Returns:
     /// - A newly initialized BuilderContext.
-    pub fn init(sp: *ServiceProvider, scope: ?*Scope, allocator: std.mem.Allocator) Self {
+    pub fn init(sp: *ServiceProvider, allocator: std.mem.Allocator) Self {
         return Self{
             .sp = sp,
-            .scope = scope,
             .active_root = Resolved.empty(allocator),
             .current_resolve = null,
         };

@@ -2,17 +2,16 @@ const std = @import("std");
 const utilities = @import("utilities.zig");
 
 const Builder = @import("builder.zig").Builder;
-
 const ServiceProvider = @import("service_provider.zig").ServiceProvider;
-
 const DependencyInfo = @import("dependency.zig").DependencyInfo;
 const IDependencyInfo = @import("dependency.zig").IDependencyInfo;
 const LifeCycle = @import("dependency.zig").LifeCycle;
 
-const GenericFnWrapper = @import("generics.zig").GenericFnWrapper;
+const generics = @import("generics.zig");
+const GenericWrapper = generics.GenericFnWrapper;
 
 // Define possible errors related to the container
-const ContainerError = error{
+pub const ContainerError = error{
     ServiceNotFound, // Error when a required service is not found
     TransitiveDependency, // Error when a transitive dependency cycle is detected
     LifeCycleError, // Error when there is a lifecycle mismatch
@@ -20,59 +19,24 @@ const ContainerError = error{
 
 // Container struct manages dependency registrations and resolutions
 pub const Container = struct {
-    // Hash map storing dependencies indexed by their names
-    dependencies: std.StringHashMap(IDependencyInfo),
-    // Allocator for memory management
-    allocator: std.mem.Allocator,
-
     const Self = @This();
 
-    // Initialize a new Container with the given allocator
-    pub fn init(allocator: std.mem.Allocator) Self {
-        return Self{
+    dependencies: std.StringHashMap(IDependencyInfo),
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator) Container {
+        return Container{
             .dependencies = std.StringHashMap(IDependencyInfo).init(allocator),
             .allocator = allocator,
         };
     }
 
-    // Deinitialize the Container, cleaning up all dependencies
-    pub fn deinit(self: *Self) void {
+    pub fn deinit(self: *Container) void {
         var iter = self.dependencies.valueIterator();
-        while (iter.next()) |ptr| {
-            // Call the destroy function for each dependency
-            ptr.destroy_fn(ptr.ptr, self.allocator);
+        while (iter.next()) |dep_info| {
+            dep_info.destroy_fn(dep_info.ptr, self.allocator);
         }
         self.dependencies.deinit();
-    }
-
-    // Register a singleton dependency
-    pub fn registerSingleton(self: *Self, comptime dep: anytype) !void {
-        try self.register(dep, .singleton);
-    }
-
-    // Register a scoped dependency
-    pub fn registerScoped(self: *Self, comptime dep: anytype) !void {
-        try self.register(dep, .scoped);
-    }
-
-    // Register a transient dependency
-    pub fn registerTransient(self: *Self, comptime dep: anytype) !void {
-        try self.register(dep, .transient);
-    }
-
-    // Register a singleton dependency with a factory function
-    pub fn registerSingletonWithFactory(self: *Self, comptime factory: anytype) !void {
-        try self.registerWithFactory(factory, .singleton);
-    }
-
-    // Register a scoped dependency with a factory function
-    pub fn registerScopedWithFactory(self: *Self, comptime factory: anytype) !void {
-        try self.registerWithFactory(factory, .scoped);
-    }
-
-    // Register a transient dependency with a factory function
-    pub fn registerTransientWithFactory(self: *Self, comptime factory: anytype) !void {
-        try self.registerWithFactory(factory, .transient);
     }
 
     // Internal function to register a dependency with a specified lifecycle
@@ -81,15 +45,15 @@ pub const Container = struct {
             .Type => {
                 // If the dependency is a type, create a DependencyInfo instance
                 const dep_info_ptr = try self.allocator.create(DependencyInfo(*dep));
-                dep_info_ptr.* = try DependencyInfo(*dep).init(life_cycle, false);
+                dep_info_ptr.* = DependencyInfo(*dep).init(life_cycle, false);
 
                 // Add the dependency to the hash map
                 try self.dependencies.put(dep_info_ptr.name, dep_info_ptr.getInterface());
             },
             .Fn => {
                 // If the dependency is a factory function, wrap it and create DependencyInfo
-                const dep_info_ptr = try self.allocator.create(DependencyInfo(*GenericFnWrapper(dep)));
-                dep_info_ptr.* = try DependencyInfo(*GenericFnWrapper(dep)).init(life_cycle, true);
+                const dep_info_ptr = try self.allocator.create(DependencyInfo(*GenericWrapper(dep)));
+                dep_info_ptr.* = DependencyInfo(*GenericWrapper(dep)).init(life_cycle, true);
                 dep_info_ptr.*.name = utilities.genericName(dep);
 
                 // Add the dependency to the hash map
@@ -98,50 +62,78 @@ pub const Container = struct {
             else => @compileError("dependency unsupported"),
         }
     }
+    // Generic registration with factory function
+    pub fn registerWithFactory(self: *Container, Factory: anytype, lifecycle: LifeCycle) !void {
+        const ReturnType = utilities.getReturnType(Factory);
+        const typeName = @typeName(ReturnType);
 
-    // Internal function to register a dependency using a factory function with a specified lifecycle
-    fn registerWithFactory(self: *Self, comptime factory: anytype, life_cycle: LifeCycle) !void {
-        // Determine the return type of the factory function
-        const T = utilities.getReturnType(factory);
-        const dep_info_ptr = try self.allocator.create(DependencyInfo(*T));
+        var dep_info = try self.allocator.create(DependencyInfo(*ReturnType));
 
-        // Obtain a builder for the dependency
-        const builder = try utilities.getBuilder(T, factory);
-        dep_info_ptr.* = DependencyInfo(*T).initWithBuilder(builder, life_cycle);
+        const builder = try utilities.getBuilder(ReturnType, Factory);
+        dep_info.* = DependencyInfo(*ReturnType).initWithBuilder(builder, lifecycle);
+        try self.dependencies.put(typeName, dep_info.getInterface());
+    }
 
-        // Add the dependency to the hash map
-        try self.dependencies.put(dep_info_ptr.name, dep_info_ptr.getInterface());
+    // Convenience functions for different lifecycles
+    pub fn registerSingleton(self: *Self, comptime Dep: anytype) !void {
+        try self.register(Dep, .singleton);
+    }
+
+    pub fn registerScoped(self: *Self, comptime Dep: anytype) !void {
+        try self.register(Dep, .scoped);
+    }
+
+    pub fn registerTransient(self: *Self, comptime Dep: anytype) !void {
+        try self.register(Dep, .transient);
+    }
+
+    pub fn registerSingletonWithFactory(self: *Self, Factory: anytype) !void {
+        try self.registerWithFactory(Factory, .singleton);
+    }
+
+    pub fn registerScopedWithFactory(self: *Self, Factory: anytype) !void {
+        try self.registerWithFactory(Factory, .scoped);
+    }
+
+    pub fn registerTransientWithFactory(self: *Self, Factory: anytype) !void {
+        try self.registerWithFactory(Factory, .transient);
+    }
+
+    // New Feature: Retrieve IDependencyInfo by type T
+    pub fn getDependencyInfo(self: *Self, comptime T: type) ?IDependencyInfo {
+        const typeName = @typeName(T);
+        return self.dependencies.get(typeName);
+    }
+
+    pub fn getGenericWrapper(self: *Self, comptime T: type) ?IDependencyInfo {
+        if (!generics.isGeneric(T))
+            @compileError(@typeName(T) ++ " not a generic");
+
+        return self.dependencies.get(generics.getName(T));
     }
 
     // Create a ServiceProvider instance after validating dependencies
     pub fn createServiceProvider(self: *Self) !ServiceProvider {
-        try validateDependencies(self);
+        try self.validateDependencies();
         return ServiceProvider.init(self.allocator, self);
     }
 
-    // Create a ServiceProvider instance with a custom allocator after validating dependencies
-    pub fn createServiceProviderWithCustomAllocator(
-        self: *Self,
-        allocator: std.mem.Allocator,
-    ) !ServiceProvider {
-        try validateDependencies(self);
+    pub fn createServiceProviderWithCustomAllocator(self: *Container, allocator: std.mem.Allocator) !ServiceProvider {
+        try self.validateDependencies();
         return ServiceProvider.init(allocator, self);
     }
 
     // Validate all registered dependencies for lifecycle consistency and transitive dependencies
-    fn validateDependencies(self: *Self) !void {
+    fn validateDependencies(self: *Container) !void {
         var iter = self.dependencies.valueIterator();
 
         while (iter.next()) |di| {
             for (di.getDependencies()) |dep| {
-                // Initialize a "hash set" to track visited dependencies during transitive checks
                 var visited = std.StringHashMap(bool).init(self.allocator);
                 defer visited.deinit();
 
-                // Check lifecycle consistency
-                try self.checkDependenciesLifeCycles(di);
-                // Check for transitive dependency cycles
                 try self.checkTransitiveDependencies(di, dep.name, &visited);
+                try self.checkDependenciesLifeCycles(di);
             }
         }
     }
@@ -149,19 +141,10 @@ pub const Container = struct {
     // Helper function to validate if a dependency exists or is allowed as a special case
     fn checkDependencyValid(check: ?IDependencyInfo, dep_name: []const u8) !void {
         if (check == null) {
-            // Allow std.mem.Allocator and ServiceProvider as special dependencies
             const is_allocator = std.mem.eql(u8, dep_name, @typeName(std.mem.Allocator));
             const is_sp = std.mem.eql(u8, dep_name, @typeName(ServiceProvider));
 
-            if (is_allocator) {
-                return;
-            }
-
-            if (is_sp) {
-                return;
-            }
-
-            // If not a special case and dependency is missing, return an error
+            if (is_allocator or is_sp) return;
             return ContainerError.ServiceNotFound;
         }
     }

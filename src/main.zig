@@ -78,7 +78,7 @@ pub fn main() !void {
     while (true) {
         const logger1 = try scope.resolve(Logger);
 
-        try sp.unresolve(logger1);
+        try scope.sp.unresolve(logger1);
     }
 
     const generic_container = try scope.resolve(Generic(std.ArrayList, .{u8}));

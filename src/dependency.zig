@@ -84,7 +84,7 @@ pub fn DependencyInfo(comptime T: type) type {
         verified: bool = false,
 
         /// Initializes the DependencyInfo with a lifecycle
-        pub fn init(life_cycle: LifeCycle, comptime is_generic: bool) !Self {
+        pub fn init(life_cycle: LifeCycle, comptime is_generic: bool) Self {
             var self = Self{
                 .with_comptime_builder = true,
                 .life_cycle = life_cycle,

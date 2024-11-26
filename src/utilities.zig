@@ -117,7 +117,7 @@ pub fn getBuilder(comptime t: type, comptime f: anytype) !Builder(t) {
 
     // Ensure `f` is a function
     if (fi != .Fn) {
-        return BuilderFnErrors.PassedNotFn;
+        @compileError(@typeName(@TypeOf(f)) ++ " should be fn");
     }
 
     // Check parameter constraints
@@ -126,10 +126,10 @@ pub fn getBuilder(comptime t: type, comptime f: anytype) !Builder(t) {
         1 => {
             const param_type = fi.Fn.params[0].type.?;
             if (param_type != *ServiceProvider) {
-                return BuilderFnErrors.NotSupportedParams;
+                @compileError("parameter should be " ++ @typeName(*ServiceProvider));
             }
         },
-        else => return BuilderFnErrors.NotSupportedParams,
+        else => @compileError("Suppoted signature fn (*ServiceProvider) or fn ()"),
     }
 
     // Determine how to construct the Builder based on the return type
