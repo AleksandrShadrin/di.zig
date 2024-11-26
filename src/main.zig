@@ -9,6 +9,41 @@ const builder = @import("builder.zig");
 const Generic = @import("generics.zig").Generic;
 
 const er = error{c};
+fn Loger(comptime T: type) type {
+    return struct {
+        logger_ctx: []const u8 = @typeName(T),
+
+        pub fn init() @This() {
+            return @This(){};
+        }
+
+        fn log(self: *const @This()) void {
+            std.debug.print("{s} logged\n", .{self.logger_ctx});
+        }
+    };
+}
+
+fn Handler(comptime Request: type) type {
+    return struct {
+        const Self = @This();
+        handler: *const fn (Request) anyerror!void,
+
+        pub fn handle(self: *Self, req: Request) !void {
+            try self.handler(req);
+        }
+    };
+}
+
+fn u8HandlerFn(req: u8) !void {
+    std.debug.print("{d}\n", .{req});
+}
+
+fn geHandler() Handler(u8) {
+    return Handler(u8){
+        .handler = &u8HandlerFn,
+    };
+}
+
 // Example dependency types
 pub const Logger = struct {
     sp: *service_provider.ServiceProvider,
@@ -63,33 +98,33 @@ pub fn main() !void {
 
     // Register Logger as a singleton
     try cont.registerTransient(Logger);
+    try cont.registerTransient(Loger);
     try cont.registerSingleton(std.ArrayList);
+    try cont.registerTransientWithFactory(geHandler);
     // try cont.registerSingleton(std.ArrayHashMap);
-
     // Register Database as a non-singleton
     try cont.registerTransient(Database);
 
     var sp = try cont.createServiceProvider();
 
-    var scope = sp.initScope();
-    defer scope.deinit();
-
     // Resolve Logger multiple times; the same instance should be returned
     while (true) {
-        const logger1 = try scope.resolve(Logger);
+        var scope = sp.initScope();
+        defer scope.deinit();
 
-        try scope.sp.unresolve(logger1);
+        const logger1 = try scope.resolve(Handler(u8));
+        try logger1.handle(22);
     }
 
-    const generic_container = try scope.resolve(Generic(std.ArrayList, .{u8}));
+    const generic_container = try sp.resolve(Generic(std.ArrayList, .{u8}));
 
     var array: *std.ArrayList(u8) = generic_container.generic_payload;
     try array.append(22);
     try array.append(44);
 
     // Resolve Database multiple times; different instances should be returned
-    const db1 = try scope.resolve(Database);
-    const db2 = try scope.resolve(Database);
+    const db1 = try sp.resolve(Database);
+    const db2 = try sp.resolve(Database);
 
     _ = db1;
     _ = db2;

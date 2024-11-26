@@ -77,17 +77,10 @@ test "Dependency Injection Container - Register and Retrieve Dependencies" {
     try std.testing.expect(dbInfo.?.life_cycle == LifeCycle.scoped);
 }
 
-test "Dependency Injection Container - Validate Dependencies" {
+test "Dependency Injection Container - Validate circular dependencies" {
     const allocator = std.testing.allocator;
     var container = Container.init(allocator);
     defer container.deinit();
-
-    // Register AllocatorService and LoggerService
-    try container.registerSingleton(AllocatorService);
-    try container.registerTransient(LoggerService);
-
-    // Register DatabaseService which depends on LoggerService
-    try container.registerScoped(DatabaseService);
 
     // Attempt to create a cyclic dependency
     const mock = struct {
@@ -118,7 +111,30 @@ test "Dependency Injection Container - Validate Dependencies" {
 
     // Attempt to validate dependencies should fail due to cyclic dependency
     const err = container.createServiceProvider() catch |err| err;
-    try std.testing.expectError(ContainerError.TransitiveDependency, err);
+    try std.testing.expectError(ContainerError.CircularDependency, err);
+}
+
+test "Dependency Injection Container - Validate self circular dependencies" {
+    const allocator = std.testing.allocator;
+    var container = Container.init(allocator);
+    defer container.deinit();
+
+    // Attempt to create a cyclic dependency
+    const mock = struct {
+        const LoggerServiceWithCycle = struct {
+            pub fn init(this: *@This()) !LoggerServiceWithCycle {
+                _ = this;
+                return LoggerServiceWithCycle{};
+            }
+        };
+    };
+
+    // Register the faulty LoggerServiceWithCycle and DatabaseServiceWithCycle
+    try container.registerTransient(mock.LoggerServiceWithCycle);
+
+    // Attempt to validate dependencies should fail due to cyclic dependency
+    const err = container.createServiceProvider() catch |err| err;
+    try std.testing.expectError(ContainerError.CircularDependency, err);
 }
 
 test "Dependency Injection Container - Lifecycle Consistency" {

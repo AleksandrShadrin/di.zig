@@ -15,7 +15,7 @@ const Mutex = std.Thread.Mutex;
 // Define possible errors related to the container
 pub const ContainerError = error{
     ServiceNotFound, // Error when a required service is not found
-    TransitiveDependency, // Error when a transitive dependency cycle is detected
+    CircularDependency, // Error when a transitive dependency cycle is detected
     LifeCycleError, // Error when there is a lifecycle mismatch
 };
 
@@ -38,7 +38,7 @@ pub const Container = struct {
     pub fn deinit(self: *Container) void {
         var iter = self.dependencies.valueIterator();
         while (iter.next()) |dep_info| {
-            dep_info.destroy_fn(dep_info.ptr, self.allocator);
+            dep_info.destroy(self.allocator);
         }
         self.dependencies.deinit();
     }
@@ -53,42 +53,49 @@ pub const Container = struct {
                 // If the dependency is a type, create a DependencyInfo instance
                 const dep_info_ptr = try self.allocator.create(DependencyInfo(*dep));
                 errdefer self.allocator.destroy(dep_info_ptr);
-                dep_info_ptr.* = DependencyInfo(*dep).init(life_cycle, false);
+                dep_info_ptr.* = try DependencyInfo(*dep).init(life_cycle, false);
 
                 // Add the dependency to the hash map
-                try self.dependencies.put(dep_info_ptr.name, dep_info_ptr.getInterface());
+                try self.addDependency(dep_info_ptr.getInterface());
             },
             .Fn => {
                 // If the dependency is a factory function, wrap it and create DependencyInfo
                 const dep_info_ptr = try self.allocator.create(DependencyInfo(*GenericWrapper(dep)));
                 errdefer self.allocator.destroy(dep_info_ptr);
 
-                dep_info_ptr.* = DependencyInfo(*GenericWrapper(dep)).init(life_cycle, true);
+                dep_info_ptr.* = try DependencyInfo(*GenericWrapper(dep)).init(life_cycle, true);
                 dep_info_ptr.*.name = utilities.genericName(dep);
 
                 // Add the dependency to the hash map
-                try self.dependencies.put(dep_info_ptr.name, dep_info_ptr.getInterface());
+                try self.addDependency(dep_info_ptr.getInterface());
             },
             else => @compileError("dependency unsupported"),
         }
     }
+
     // Generic registration with factory function
     pub fn registerWithFactory(self: *Container, Factory: anytype, lifecycle: LifeCycle) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
         const ReturnType = utilities.getReturnType(Factory);
-        const typeName = @typeName(ReturnType);
 
         var dep_info = try self.allocator.create(DependencyInfo(*ReturnType));
         errdefer self.allocator.destroy(dep_info);
 
         const builder = try utilities.getBuilder(ReturnType, Factory);
         dep_info.* = DependencyInfo(*ReturnType).initWithBuilder(builder, lifecycle);
-        try self.dependencies.put(typeName, dep_info.getInterface());
+
+        try self.addDependency(dep_info.getInterface());
     }
 
-    // Convenience functions for different lifecycles
+    fn addDependency(self: *Self, di: IDependencyInfo) !void {
+        const previous_di = self.dependencies.get(di.getName());
+        if (previous_di != null) previous_di.?.destroy(self.allocator);
+
+        try self.dependencies.put(di.getName(), di);
+    }
+
     pub fn registerSingleton(self: *Self, comptime Dep: anytype) !void {
         try self.register(Dep, .singleton);
     }
@@ -236,7 +243,7 @@ pub const Container = struct {
         for (deps) |dep| {
             // If the dependency directly depends on the initial check, report a transitive dependency error
             if (std.mem.eql(u8, dep.name, check.getName())) {
-                return ContainerError.TransitiveDependency;
+                return ContainerError.CircularDependency;
             }
 
             // Recursively check transitive dependencies

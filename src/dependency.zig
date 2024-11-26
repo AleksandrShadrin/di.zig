@@ -13,6 +13,7 @@ const generics = @import("generics.zig");
 // Define possible dependency errors
 const DependencyError = error{
     DependencyShouldBeReference,
+    NoInitFn,
 };
 
 // Enum representing the lifecycle of a dependency
@@ -41,17 +42,17 @@ pub const IDependencyInfo = struct {
     life_cycle: LifeCycle,
 
     /// Retrieves the list of dependencies
-    pub fn getDependencies(self: *IDependencyInfo) []const Dependency {
+    pub fn getDependencies(self: *const IDependencyInfo) []const Dependency {
         return self.get_dependencies_fn(self.ptr);
     }
 
     /// Retrieves the name of the dependency
-    pub fn getName(self: *IDependencyInfo) []const u8 {
+    pub fn getName(self: *const IDependencyInfo) []const u8 {
         return self.get_name_fn(self.ptr);
     }
 
     /// Deinitializes the dependency
-    pub fn deinit(self: *IDependencyInfo, ptr: *anyopaque, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *const IDependencyInfo, ptr: *anyopaque, allocator: std.mem.Allocator) void {
         return self.deinit_fn(ptr, allocator);
     }
 
@@ -59,8 +60,12 @@ pub const IDependencyInfo = struct {
         self.verify_fn(self.ptr);
     }
 
-    pub fn isVerified(self: *IDependencyInfo) bool {
+    pub fn isVerified(self: *const IDependencyInfo) bool {
         return self.is_verified_fn(self.ptr);
+    }
+
+    pub fn destroy(self: *const IDependencyInfo, allocator: std.mem.Allocator) void {
+        self.destroy_fn(self.ptr, allocator);
     }
 };
 
@@ -84,7 +89,7 @@ pub fn DependencyInfo(comptime T: type) type {
         verified: bool = false,
 
         /// Initializes the DependencyInfo with a lifecycle
-        pub fn init(life_cycle: LifeCycle, comptime is_generic: bool) Self {
+        pub fn init(life_cycle: LifeCycle, comptime is_generic: bool) !Self {
             var self = Self{
                 .with_comptime_builder = true,
                 .life_cycle = life_cycle,
@@ -92,6 +97,9 @@ pub fn DependencyInfo(comptime T: type) type {
             };
 
             if (!is_generic) {
+                if (!utilities.hasInit(DerefT))
+                    return DependencyError.NoInitFn;
+
                 const dependencies = utilities.getInitArgs(DerefT);
 
                 inline for (dependencies, 0..) |dep, i| {

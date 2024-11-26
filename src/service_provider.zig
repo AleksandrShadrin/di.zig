@@ -137,7 +137,6 @@ pub const ServiceProvider = struct {
         // Initialize a new BuilderContext for this resolution operation.
         var ctx = BuilderContext{
             .sp = self,
-            .scope = null,
             .active_root = Resolved.empty(self.allocator),
             .current_resolve = null,
         };
@@ -223,15 +222,21 @@ pub const ServiceProvider = struct {
         const inner_type: type = generic.getGenericType(T);
 
         // Retrieve the dependency interface for the generic type from the container.
-        const generic_di_interface = self.container.getGenericWrapper(T) orelse return ServiceProviderError.ServiceNotFound;
+        const generic_di_interface = self.container.getGenericWrapper(T);
 
         // Check if the inner type and the generic type are already registered.
         const concrete_di_interface = self.container.getDependencyInfo(inner_type);
         const container_di_interface = self.container.getDependencyInfo(T);
 
+        if (generic_di_interface == null and
+            concrete_di_interface == null)
+            return ServiceProviderError.ServiceNotFound;
+
+        const life_cycle = if (concrete_di_interface != null) concrete_di_interface.?.life_cycle else generic_di_interface.?.life_cycle;
+
         // If the inner type is not registered, register it based on its lifecycle.
         if (concrete_di_interface == null) {
-            try switch (generic_di_interface.life_cycle) {
+            try switch (life_cycle) {
                 .singleton => self.container.registerSingleton(inner_type),
                 .scoped => self.container.registerScoped(inner_type),
                 .transient => self.container.registerTransient(inner_type),
@@ -240,7 +245,7 @@ pub const ServiceProvider = struct {
 
         // If the generic type itself is not registered, register it based on its lifecycle.
         if (container_di_interface == null) {
-            try switch (generic_di_interface.life_cycle) {
+            try switch (life_cycle) {
                 .singleton => self.container.registerSingleton(T),
                 .scoped => self.container.registerScoped(T),
                 .transient => self.container.registerTransient(T),
@@ -453,17 +458,8 @@ pub const Scope = struct {
     /// - A pointer to the resolved dependency.
     /// - An error if the resolution process fails.
     pub fn resolve(self: *Self, comptime T: type) !*T {
-        // Initialize a new BuilderContext specific to this scope's resolution.
-        var ctx = BuilderContext{
-            .sp = &self.sp,
-            .active_root = Resolved.empty(self.allocator),
-            .current_resolve = null,
-        };
-
         // Delegate the resolution to the ServiceProvider's internal resolve method.
-        const resolved = try self.sp.inner_resolve(&ctx, T);
-
-        return resolved;
+        return try self.sp.resolve(T);
     }
 
     pub fn deinit(self: *Self) void {

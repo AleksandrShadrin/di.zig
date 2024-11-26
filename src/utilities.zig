@@ -16,7 +16,7 @@ const BuilderFnErrors = error{
 /// ```zig
 /// const hasInitFn = hasInit(MyType);
 /// ```
-pub fn hasInit(comptime T: type) bool {
+pub inline fn hasInit(comptime T: type) bool {
     // Check if `T` has a function named `init`
     if (!std.meta.hasFn(T, "init")) {
         return false;
