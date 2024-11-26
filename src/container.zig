@@ -10,6 +10,8 @@ const LifeCycle = @import("dependency.zig").LifeCycle;
 const generics = @import("generics.zig");
 const GenericWrapper = generics.GenericFnWrapper;
 
+const Mutex = std.Thread.Mutex;
+
 // Define possible errors related to the container
 pub const ContainerError = error{
     ServiceNotFound, // Error when a required service is not found
@@ -23,6 +25,8 @@ pub const Container = struct {
 
     dependencies: std.StringHashMap(IDependencyInfo),
     allocator: std.mem.Allocator,
+
+    mutex: Mutex = Mutex{},
 
     pub fn init(allocator: std.mem.Allocator) Container {
         return Container{
@@ -41,10 +45,14 @@ pub const Container = struct {
 
     // Internal function to register a dependency with a specified lifecycle
     fn register(self: *Self, comptime dep: anytype, life_cycle: LifeCycle) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         switch (@typeInfo(@TypeOf(dep))) {
             .Type => {
                 // If the dependency is a type, create a DependencyInfo instance
                 const dep_info_ptr = try self.allocator.create(DependencyInfo(*dep));
+                errdefer self.allocator.destroy(dep_info_ptr);
                 dep_info_ptr.* = DependencyInfo(*dep).init(life_cycle, false);
 
                 // Add the dependency to the hash map
@@ -53,6 +61,8 @@ pub const Container = struct {
             .Fn => {
                 // If the dependency is a factory function, wrap it and create DependencyInfo
                 const dep_info_ptr = try self.allocator.create(DependencyInfo(*GenericWrapper(dep)));
+                errdefer self.allocator.destroy(dep_info_ptr);
+
                 dep_info_ptr.* = DependencyInfo(*GenericWrapper(dep)).init(life_cycle, true);
                 dep_info_ptr.*.name = utilities.genericName(dep);
 
@@ -64,10 +74,14 @@ pub const Container = struct {
     }
     // Generic registration with factory function
     pub fn registerWithFactory(self: *Container, Factory: anytype, lifecycle: LifeCycle) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         const ReturnType = utilities.getReturnType(Factory);
         const typeName = @typeName(ReturnType);
 
         var dep_info = try self.allocator.create(DependencyInfo(*ReturnType));
+        errdefer self.allocator.destroy(dep_info);
 
         const builder = try utilities.getBuilder(ReturnType, Factory);
         dep_info.* = DependencyInfo(*ReturnType).initWithBuilder(builder, lifecycle);
