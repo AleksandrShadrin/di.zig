@@ -6,7 +6,6 @@ A simple and lightweight Dependency Injection (DI) container for Zig. Manage you
 * Singletons: One instance throughout the app.
 * Transients: New instance every time.
 * Scoped Services: Manage lifetimes within scopes.
-* Zero-Sized Types: Efficient handling without extra allocations.
 * Generics Support: Work with generic types smoothly.
 * Error Handling: Gracefully handle errors when creaing/allocating services
 
