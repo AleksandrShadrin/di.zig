@@ -407,8 +407,13 @@ pub const ServiceProvider = struct {
         }
     }
 
-    pub fn initScope(self: *Self) Scope {
-        return Scope.init(self.clone(), self.allocator);
+    pub fn initScope(self: *Self) !*Scope {
+        var sp = self.clone();
+        const scope_ptr = try self.allocator.create(Scope);
+        sp.scope = scope_ptr;
+
+        scope_ptr.* = Scope.init(sp, self.allocator);
+        return scope_ptr;
     }
 
     fn clone(self: *Self) Self {
@@ -467,8 +472,10 @@ pub const Scope = struct {
             r.deinit();
         }
 
-        self.sp.deinit();
         self.scope.deinit();
+
+        self.sp.deinit();
+        self.allocator.destroy(self.sp.scope.?);
     }
 };
 

@@ -77,37 +77,35 @@ test "Dependency Injection Container - Register and Retrieve Dependencies" {
     try std.testing.expect(dbInfo.?.life_cycle == LifeCycle.scoped);
 }
 
-test "Dependency Injection Container - Validate circular dependencies" {
+test "Dependency Injection Container - Validate direct circular dependencies" {
     const allocator = std.testing.allocator;
     var container = Container.init(allocator);
     defer container.deinit();
 
     // Attempt to create a cyclic dependency
-    const mock = struct {
-        const LoggerServiceWithCycle = struct {
-            db: *DatabaseServiceWithCycle,
-
-            pub fn init(db: *DatabaseServiceWithCycle) !LoggerServiceWithCycle {
-                return LoggerServiceWithCycle{
-                    .db = db,
-                };
-            }
-        };
-
-        const DatabaseServiceWithCycle = struct {
-            logger: *LoggerServiceWithCycle,
-
-            pub fn init(logger: *LoggerServiceWithCycle) !DatabaseServiceWithCycle {
-                return DatabaseServiceWithCycle{
-                    .logger = logger,
-                };
-            }
-        };
-    };
+    const direct_cycle = @import("assets/direct_cycle.zig");
 
     // Register the faulty LoggerServiceWithCycle and DatabaseServiceWithCycle
-    try container.registerTransient(mock.LoggerServiceWithCycle);
-    try container.registerTransient(mock.DatabaseServiceWithCycle);
+    try container.registerTransient(direct_cycle.A);
+    try container.registerTransient(direct_cycle.B);
+
+    // Attempt to validate dependencies should fail due to cyclic dependency
+    const err = container.createServiceProvider() catch |err| err;
+    try std.testing.expectError(ContainerError.CircularDependency, err);
+}
+
+test "Dependency Injection Container - Validate indirect circular dependencies" {
+    const allocator = std.testing.allocator;
+    var container = Container.init(allocator);
+    defer container.deinit();
+
+    // Attempt to create a cyclic dependency
+    const direct_cycle = @import("assets/indirect_cycle.zig");
+
+    // Register the faulty LoggerServiceWithCycle and DatabaseServiceWithCycle
+    try container.registerTransient(direct_cycle.A);
+    try container.registerTransient(direct_cycle.B);
+    try container.registerTransient(direct_cycle.C);
 
     // Attempt to validate dependencies should fail due to cyclic dependency
     const err = container.createServiceProvider() catch |err| err;
@@ -120,17 +118,10 @@ test "Dependency Injection Container - Validate self circular dependencies" {
     defer container.deinit();
 
     // Attempt to create a cyclic dependency
-    const mock = struct {
-        const LoggerServiceWithCycle = struct {
-            pub fn init(this: *@This()) !LoggerServiceWithCycle {
-                _ = this;
-                return LoggerServiceWithCycle{};
-            }
-        };
-    };
+    const self_cycle = @import("assets/self_cycle.zig");
 
     // Register the faulty LoggerServiceWithCycle and DatabaseServiceWithCycle
-    try container.registerTransient(mock.LoggerServiceWithCycle);
+    try container.registerTransient(self_cycle.A);
 
     // Attempt to validate dependencies should fail due to cyclic dependency
     const err = container.createServiceProvider() catch |err| err;
