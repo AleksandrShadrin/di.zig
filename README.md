@@ -11,7 +11,7 @@ A simple and lightweight Dependency Injection (DI) container for Zig. Manage you
 * Generics Support: Work with generic types smoothly.
 * Error Handling: Gracefully handle errors when creating/allocating services
 
-🛠️ Installation
+# 🛠️ Installation
 
 Add the di module to your project using zig pm.
 
@@ -19,9 +19,9 @@ Add the di module to your project using zig pm.
 const di = @import("di");
 ```
 
-📚 Usage
-Initialize the Container
+# 📚 Usage
 
+Initialize the Container.
 Start by setting up the DI container with an allocator.
 
 ```zig
@@ -38,32 +38,32 @@ pub fn main() !void {
     // Register your services here
 }
 ```
-Register Services
+## Register Services
 
 Choose how you want your services to behave.
 
-Singleton
+### Singleton
 
 One shared instance.
 
 ```zig
 try container.registerSingleton(MyService);
 ```
-Transient
+### Transient
 
 A new instance each time.
 
 ```zig
 try container.registerTransient(MyService);
 ```
-Scoped
+### Scoped
 
 Managed within a specific scope.
 
 ```zig
 try container.registerScoped(MyService);
 ```
-Create a Service Provider
+## Create a Service Provider
 
 After registering services, create a provider to resolve them.
 
@@ -71,21 +71,21 @@ After registering services, create a provider to resolve them.
 var serviceProvider = try container.createServiceProvider();
 defer serviceProvider.deinit();
 ```
-Resolve Services
+## Resolve Services
 
 Get instances of your services when needed.
 
 ```zig
 const myService = try serviceProvider.resolve(MyService);
 ```
-Resolving Generics
+## Resolving Generics
 
 Handle generic types with ease.
 
 ```zig
 const genericService = try serviceProvider.resolve(di.Generic(MyService, .{u8}));
 ```
-Using Scopes
+## Using Scopes
 
 Manage scoped services within a controlled environment.
 
@@ -95,7 +95,7 @@ defer scope.deinit();
 
 const scopedService = try scope.resolve(MyService);
 ```
-Unresolve Transient Services
+## Unresolve Transient Services
 
 Manually release a service if needed.
 
@@ -103,7 +103,7 @@ Manually release a service if needed.
 try serviceProvider.unresolve(resolvedService);
 ```
 
-🎉 Example
+# 🎉 Example
 
 Here's a quick example to get you started!
 
