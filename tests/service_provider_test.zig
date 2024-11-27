@@ -240,7 +240,7 @@ test "Service Provider - Should correctly work when service resolved inside of s
     var container = Container.init(allocator);
     defer container.deinit();
 
-    const services = @import("assets/service_with_inner_resolving.zig");
+    const services = @import("assets/services_with_inner_resolving.zig");
     try container.registerTransient(services.A);
     try container.registerTransient(services.B);
     try container.registerTransient(services.C);
@@ -249,4 +249,21 @@ test "Service Provider - Should correctly work when service resolved inside of s
     defer sp.deinit();
 
     _ = try sp.resolve(services.A);
+}
+
+test "Service Provider - Should validate generics for cycles" {
+    const allocator = std.testing.allocator;
+    var container = Container.init(allocator);
+    defer container.deinit();
+
+    const services = @import("assets/services_runtime_generic_validation.zig");
+    try container.registerTransient(services.A);
+    try container.registerTransient(services.B);
+    try container.registerTransient(services.C);
+
+    var sp = try container.createServiceProvider();
+    defer sp.deinit();
+
+    const service = sp.resolve(services.B);
+    try std.testing.expectError(di.ServiceProviderError.CycleDependency, service);
 }
