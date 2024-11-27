@@ -13,10 +13,14 @@ A simple and lightweight Dependency Injection (DI) container for Zig. Manage you
 
 # 🛠️ Installation
 
-Add the di module to your project using zig pm.
+Add the di module to your project using zig zon.
 
 ```zig
-const di = @import("di");
+const di_dep = b.dependency("di", .{ .target = target, .optimize = optimize });
+const di_module = di_dep.module("di");
+
+const exe = b.addExecutable(.{...});
+exe.root_module.addImport("di", di_module);
 ```
 
 # 📚 Usage
