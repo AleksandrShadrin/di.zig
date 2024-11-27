@@ -23,24 +23,18 @@ fn Loger(comptime T: type) type {
     };
 }
 
-fn Handler(comptime Request: type) type {
+fn Handler(comptime inner_handler: anytype) type {
     return struct {
         const Self = @This();
-        handler: *const fn (Request) anyerror!void,
 
-        pub fn handle(self: *Self, req: Request) !void {
-            try self.handler(req);
+        pub fn init() Self {
+            return Self{};
         }
-    };
-}
 
-fn u8HandlerFn(req: u8) !void {
-    std.debug.print("{d}\n", .{req});
-}
-
-fn geHandler() Handler(u8) {
-    return Handler(u8){
-        .handler = &u8HandlerFn,
+        pub fn handle(self: *Self, req: anytype) !void {
+            _ = self;
+            try inner_handler.handle(req);
+        }
     };
 }
 
@@ -100,7 +94,7 @@ pub fn main() !void {
     try cont.registerTransient(Logger);
     try cont.registerTransient(Loger);
     try cont.registerSingleton(std.ArrayList);
-    try cont.registerTransientWithFactory(geHandler);
+    try cont.registerScoped(Handler);
     // try cont.registerSingleton(std.ArrayHashMap);
     // Register Database as a non-singleton
     try cont.registerTransient(Database);
@@ -109,11 +103,18 @@ pub fn main() !void {
 
     // Resolve Logger multiple times; the same instance should be returned
     while (true) {
-        var scope = sp.initScope();
+        var scope = try sp.initScope();
         defer scope.deinit();
 
-        const logger1 = try scope.resolve(Handler(u8));
-        try logger1.handle(22);
+        const logger1 = try scope.resolve(Generic(Handler, .{struct {
+            pub fn handle(self: @This(), req: anytype) !void {
+                _ = self;
+                _ = req;
+                // std.debug.print("{any}\n", .{req});
+            }
+        }{}}));
+
+        try logger1.generic_payload.handle(22);
     }
 
     const generic_container = try sp.resolve(Generic(std.ArrayList, .{u8}));

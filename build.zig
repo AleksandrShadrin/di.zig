@@ -34,7 +34,7 @@ pub fn build(b: *std.Build) void {
 
     {
         const exe_unit_tests = b.addTest(.{
-            .root_source_file = b.path("tests/container_test.zig"),
+            .root_source_file = b.path("tests/tests.zig"),
             .target = target,
             .optimize = optimize,
         });

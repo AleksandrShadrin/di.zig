@@ -1,5 +1,5 @@
 const std = @import("std");
-const di = @import("di"); // Adjust the path as necessary
+const di = @import("di");
 
 const Container = di.Container;
 const LifeCycle = di.LifeCycle;
@@ -9,6 +9,15 @@ const ContainerError = di.ContainerError;
 const AllocatorService = struct {
     pub fn init(allocator: std.mem.Allocator) AllocatorService {
         _ = allocator;
+        return AllocatorService{};
+    }
+
+    pub fn builder() AllocatorService {
+        return AllocatorService{};
+    }
+
+    pub fn builder_with_sp(sp: *di.ServiceProvider) AllocatorService {
+        _ = sp;
         return AllocatorService{};
     }
 };
@@ -42,9 +51,31 @@ const DatabaseService = struct {
     }
 };
 
-// Test Cases
+test "Dependency Injection Container - Should register services with custom builder fn" {
+    const allocator = std.testing.allocator;
+    var container = Container.init(allocator);
+    defer container.deinit();
 
-test "Dependency Injection Container - Register and Retrieve Dependencies" {
+    // Register AllocatorService as a singleton with no args builder
+    try container.registerSingletonWithFactory(AllocatorService.builder);
+
+    // Verify AllocatorService registration
+    var allocatorInfo = container.getDependencyInfo(AllocatorService);
+    try std.testing.expect(allocatorInfo != null);
+    try std.testing.expectEqualStrings(allocatorInfo.?.getName(), @typeName(AllocatorService));
+    try std.testing.expect(allocatorInfo.?.life_cycle == LifeCycle.singleton);
+
+    try container.registerSingletonWithFactory(AllocatorService.builder_with_sp);
+
+    // Verify AllocatorService registration with *ServiceProvider arg
+    var loggerInfo = container.getDependencyInfo(AllocatorService);
+    try std.testing.expect(loggerInfo != null);
+    try std.testing.expectEqualStrings(loggerInfo.?.getName(), @typeName(AllocatorService));
+    try std.testing.expect(loggerInfo.?.life_cycle == LifeCycle.singleton);
+}
+
+// Test Cases
+test "Dependency Injection Container - Register and retrieve dependencies" {
     const allocator = std.testing.allocator;
     var container = Container.init(allocator);
     defer container.deinit();
@@ -128,7 +159,7 @@ test "Dependency Injection Container - Validate self circular dependencies" {
     try std.testing.expectError(ContainerError.CircularDependency, err);
 }
 
-test "Dependency Injection Container - Lifecycle Consistency" {
+test "Dependency Injection Container - Lifecycle consistency" {
     const allocator = std.testing.allocator;
     var container = Container.init(allocator);
     defer container.deinit();
@@ -157,7 +188,7 @@ test "Dependency Injection Container - Lifecycle Consistency" {
     try std.testing.expectError(ContainerError.LifeCycleError, err);
 }
 
-test "Dependency Injection Container - Missing Dependency" {
+test "Dependency Injection Container - Missing dependency" {
     const allocator = std.testing.allocator;
     var container = Container.init(allocator);
     defer container.deinit();
