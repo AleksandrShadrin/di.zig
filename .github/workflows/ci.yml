@@ -1,0 +1,58 @@
+name: CI
+
+# Trigger the workflow on push and pull request events to the main branch
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    # Define the operating systems to run the workflow on
+    runs-on: ${{ matrix.os }}
+    
+    # Define a matrix to run the job on multiple OS environments
+    strategy:
+      matrix:
+        os: [ ubuntu-latest, windows-latest, macos-latest ]
+      # You can specify other variables here if needed
+
+    steps:
+      # Step 1: Checkout the repository content
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      # Step 2: Set up Zig
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          # Specify the Zig version you want to use
+          # You can set it to 'latest' or a specific version like '0.11.0'
+          version: 'latest'
+
+      # If a Zig setup action is not available, you can install Zig manually
+      # Uncomment and adjust the following step accordingly
+
+      # - name: Install Zig (Manual Method)
+      #   if: matrix.os == 'ubuntu-latest'
+      #   run: |
+      #     sudo apt-get update
+      #     sudo apt-get install -y curl
+      #     curl -L https://ziglang.org/download/0.11.0/zig-linux-x86_64-0.11.0.tar.xz | tar -xJ
+      #     sudo mv zig-linux-x86_64-0.11.0 /opt/zig
+      #     sudo ln -s /opt/zig/zig /usr/local/bin/zig
+
+      # Adjust the installation steps for Windows and macOS if needed
+
+      # Step 3: Verify Zig Installation
+      - name: Verify Zig Installation
+        run: zig version
+
+      # Step 4: Build the Project
+      - name: Build
+        run: zig build
+
+      # Step 5: Run Tests
+      - name: Run Tests
+        run: zig test
