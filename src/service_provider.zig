@@ -7,7 +7,7 @@ const generic = @import("generics.zig");
 
 // Define custom errors specific to the ServiceProvider's operations.
 // These errors are used to handle various failure scenarios during dependency resolution.
-const ServiceProviderError = error{
+pub const ServiceProviderError = error{
     NoResolveContextFound, // Indicates that no active resolution context was found.
     ServiceNotFound, // The requested service is not registered in the container.
     NoActiveScope, // Attempted to resolve a scoped service without an active scope.
@@ -421,7 +421,7 @@ pub const ServiceProvider = struct {
     }
 };
 
-pub const ScopeErrors = error{
+pub const ScopeError = error{
     ServiceNotFound,
     LifeCycleNotScope,
 };

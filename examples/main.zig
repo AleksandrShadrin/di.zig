@@ -1,12 +1,9 @@
 const assert = @import("std").testing.expectEqual;
 
 const std = @import("std");
-const container = @import("container.zig");
-const dependency = @import("dependency.zig");
-const service_provider = @import("service_provider.zig");
-const builder = @import("builder.zig");
+const di = @import("di");
 
-const Generic = @import("generics.zig").Generic;
+const Generic = di.Generic;
 
 const er = error{c};
 fn Loger(comptime T: type) type {
@@ -40,10 +37,10 @@ fn Handler(comptime inner_handler: anytype) type {
 
 // Example dependency types
 pub const Logger = struct {
-    sp: *service_provider.ServiceProvider,
+    sp: *di.ServiceProvider,
 
     pub fn init(
-        sp: *service_provider.ServiceProvider,
+        sp: *di.ServiceProvider,
         array: *Generic(std.ArrayList, .{u8}),
     ) !Logger {
         _ = array;
@@ -86,7 +83,7 @@ pub const Database = struct {
 pub fn main() !void {
     const allocator = std.heap.page_allocator;
 
-    var cont = container.Container.init(allocator);
+    var cont = di.Container.init(allocator);
 
     defer cont.deinit();
 
@@ -151,7 +148,7 @@ pub fn Gen(f: *const fn () void, s: type, ff: fn () void) type {
 test "check for mem leaks" {
     const allocator = std.testing.allocator;
 
-    var cont = container.Container.init(allocator);
+    var cont = di.Container.init(allocator);
     defer cont.deinit();
 
     // Register Logger as a singleton
@@ -161,7 +158,7 @@ test "check for mem leaks" {
 
     try cont.registerScoped(std.ArrayList);
 
-    var sp = service_provider.ServiceProvider.init(allocator, &cont);
+    var sp = di.ServiceProvider.init(allocator, &cont);
     defer sp.deinit();
 
     var scope = sp.initScope();
