@@ -116,6 +116,31 @@ test "Service Provider - Should resolve services correct and call deinit when us
     try interceptor.assert_confirmed(statement);
 }
 
+test "Service Provider - Should not allocate services when allocator error" {
+    const allocator = std.testing.allocator;
+    var container = Container.init(allocator);
+    defer container.deinit();
+
+    const services = @import("assets/services_out_of_memory_case.zig");
+
+    try container.registerTransient(services.A);
+    try container.registerSingleton(services.B);
+
+    var sp = try container.createServiceProvider();
+    sp.allocator = std.testing.failing_allocator;
+
+    defer {
+        sp.allocator = allocator;
+        sp.deinit();
+    }
+
+    const service_1 = sp.resolve(services.A);
+    try std.testing.expectError(std.mem.Allocator.Error.OutOfMemory, service_1);
+
+    const service_2 = sp.resolve(services.B);
+    try std.testing.expectError(std.mem.Allocator.Error.OutOfMemory, service_2);
+}
+
 test "Service Provider - Should create scope and correct resolve services" {
     const allocator = std.testing.allocator;
     var container = Container.init(allocator);
@@ -148,4 +173,97 @@ test "Service Provider - Should create scope and correct resolve services" {
     const service3 = try scope.resolve(service);
 
     try std.testing.expect(service3.a == service2);
+}
+
+test "Service Provider - Should correctly allocate services when resolving error" {
+    const allocator = std.testing.allocator;
+    var container = Container.init(allocator);
+    defer container.deinit();
+
+    const mock_err = error{e};
+    const service1 = struct {
+        f: u8 = 12,
+
+        pub fn init() !@This() {
+            return mock_err.e;
+        }
+    };
+
+    const service2 = struct {
+        f: u8 = 12,
+
+        pub fn init() !@This() {
+            return mock_err.e;
+        }
+    };
+    try container.registerTransient(service1);
+    try container.registerSingleton(service2);
+
+    var sp = try container.createServiceProvider();
+    defer sp.deinit();
+
+    const service_1 = sp.resolve(service1);
+    try std.testing.expectError(mock_err.e, service_1);
+
+    const service_2 = sp.resolve(service2);
+    try std.testing.expectError(mock_err.e, service_2);
+}
+
+test "Service Provider - In scope should correctly allocate services when resolving error" {
+    const allocator = std.testing.allocator;
+    var container = Container.init(allocator);
+    defer container.deinit();
+
+    const mock_err = error{e};
+    const service = struct {
+        f: u8 = 12,
+
+        pub fn init() !@This() {
+            return mock_err.e;
+        }
+    };
+
+    try container.registerScoped(service);
+
+    var sp = try container.createServiceProvider();
+    defer sp.deinit();
+
+    var scope = try sp.initScope();
+    defer scope.deinit();
+
+    const service1 = scope.resolve(service);
+    try std.testing.expectError(mock_err.e, service1);
+}
+
+test "Service Provider - Should correctly work when service resolved inside of service" {
+    const allocator = std.testing.allocator;
+    var container = Container.init(allocator);
+    defer container.deinit();
+
+    const services = @import("assets/services_with_inner_resolving.zig");
+    try container.registerTransient(services.A);
+    try container.registerTransient(services.B);
+    try container.registerTransient(services.C);
+
+    var sp = try container.createServiceProvider();
+    defer sp.deinit();
+
+    _ = try sp.resolve(services.A);
+}
+
+test "Service Provider - Should validate generics for cycles" {
+    const allocator = std.testing.allocator;
+    var container = Container.init(allocator);
+    defer container.deinit();
+
+    const services = @import("assets/services_runtime_generic_validation.zig");
+    try container.registerTransient(services.A);
+    try container.registerTransient(services.B);
+    try container.registerTransient(services.C);
+
+    var sp = try container.createServiceProvider();
+    defer sp.deinit();
+
+    const service = sp.resolve(services.B);
+    try std.testing.expectError(di.ServiceProviderError.CycleDependency, service);
 }

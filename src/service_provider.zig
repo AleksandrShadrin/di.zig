@@ -301,7 +301,6 @@ pub const ServiceProvider = struct {
         new_current.info = di_interface;
 
         try ctx.active_root.?.checkCycles(null);
-        defer new_current.info.?.verify();
 
         // Instantiate the dependency based on its lifecycle configuration.
         switch (dep_info.life_cycle) {
@@ -378,6 +377,7 @@ pub const ServiceProvider = struct {
             ctx.current_resolve = &ctx.active_root.?;
         }
 
+        new_current.info.?.verify();
         // Return the pointer to the newly resolved dependency.
         return @ptrCast(@alignCast(new_current.ptr));
     }
@@ -519,7 +519,7 @@ const Resolved = struct {
                 continue;
             }
 
-            try child.checkCycles(null);
+            try child.checkCycles(ctx);
 
             if (std.mem.eql(u8, child.info.?.getName(), ctx.?.info.?.getName())) {
                 return ServiceProviderError.CycleDependency;
