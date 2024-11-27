@@ -30,19 +30,7 @@ jobs:
           # Specify the Zig version you want to use
           # You can set it to 'latest' or a specific version like '0.11.0'
           version: 'latest'
-
-      # If a Zig setup action is not available, you can install Zig manually
-      # Uncomment and adjust the following step accordingly
-
-      # - name: Install Zig (Manual Method)
-      #   if: matrix.os == 'ubuntu-latest'
-      #   run: |
-      #     sudo apt-get update
-      #     sudo apt-get install -y curl
-      #     curl -L https://ziglang.org/download/0.11.0/zig-linux-x86_64-0.11.0.tar.xz | tar -xJ
-      #     sudo mv zig-linux-x86_64-0.11.0 /opt/zig
-      #     sudo ln -s /opt/zig/zig /usr/local/bin/zig
-
+          
       # Adjust the installation steps for Windows and macOS if needed
 
       # Step 3: Verify Zig Installation
