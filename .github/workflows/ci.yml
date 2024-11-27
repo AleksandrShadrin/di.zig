@@ -55,4 +55,4 @@ jobs:
 
       # Step 5: Run Tests
       - name: Run Tests
-        run: zig test
+        run: zig build test --summary all
