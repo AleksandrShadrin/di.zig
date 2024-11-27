@@ -32,7 +32,7 @@ pub const ServiceProvider = struct {
 
     resolve_roots: std.ArrayList(Resolved), // Maintains a list of root resolution contexts for tracking.
 
-    singleton: std.ArrayList(Resolved), // Stores instances of singleton services managed by the provider.
+    singleton: ResolvedServices, // Stores instances of singleton services managed by the provider.
 
     scope: ?*Scope = null,
 
@@ -44,12 +44,21 @@ pub const ServiceProvider = struct {
     ///
     /// Returns:
     /// - A new instance of ServiceProvider.
-    pub fn init(a: std.mem.Allocator, c: *container.Container) Self {
+    pub fn init(a: std.mem.Allocator, c: *container.Container) !Self {
         return .{
             .allocator = a,
             .container = c,
             .resolve_roots = std.ArrayList(Resolved).init(a),
-            .singleton = std.ArrayList(Resolved).init(a),
+            .singleton = try ResolvedServices.init(a),
+        };
+    }
+
+    fn clone(self: *Self) !Self {
+        return Self{
+            .singleton = self.singleton,
+            .allocator = self.allocator,
+            .container = self.container,
+            .resolve_roots = std.ArrayList(Resolved).init(self.allocator),
         };
     }
 
@@ -61,14 +70,10 @@ pub const ServiceProvider = struct {
                 r.deinit();
         }
 
-        // Iterate through all singleton instances and deinitialize them.
-        for (self.singleton.items) |*r| {
-            r.deinit();
-        }
-
         // Clean up the internal lists holding resolved roots and singletons.
         self.resolve_roots.deinit();
-        self.singleton.deinit();
+        if (self.scope == null)
+            self.singleton.deinit();
     }
 
     /// Unresolves (deinitializes) a previously resolved dependency along with its nested dependencies.
@@ -313,14 +318,7 @@ pub const ServiceProvider = struct {
                 new_current.ptr = ptr;
             },
             .singleton => {
-                var ptr: ?*T = null;
-
-                // Check if a singleton instance already exists.
-                for (self.singleton.items) |*r| {
-                    if (std.mem.eql(u8, r.info.?.getName(), di_interface.getName())) {
-                        ptr = @ptrCast(@alignCast(r.ptr));
-                    }
-                }
+                var ptr: ?*T = @ptrCast(@alignCast(self.singleton.get(di_interface.getName())));
 
                 // If no existing singleton, create and store it.
                 if (ptr == null) {
@@ -331,7 +329,7 @@ pub const ServiceProvider = struct {
                     ptr.?.* = value;
 
                     new_current.ptr = ptr;
-                    try self.singleton.append(new_current.*);
+                    try self.singleton.add(new_current.*);
                     errdefer self.allocator.destroy(ptr.?);
                 } else {
                     new_current.ptr = ptr;
@@ -343,14 +341,7 @@ pub const ServiceProvider = struct {
                     return ServiceProviderError.NoActiveScope;
                 }
 
-                var ptr: ?*T = null;
-
-                // Check if a scoped instance already exists within the current scope.
-                for (self.scope.?.scope.items) |*r| {
-                    if (std.mem.eql(u8, r.info.?.getName(), di_interface.getName())) {
-                        ptr = @ptrCast(@alignCast(r.ptr));
-                    }
-                }
+                var ptr: ?*T = @ptrCast(@alignCast(self.scope.?.resolved_services.get(di_interface.getName())));
 
                 // If no existing scoped instance, create and store it within the current scope.
                 if (ptr == null) {
@@ -362,7 +353,7 @@ pub const ServiceProvider = struct {
 
                     new_current.ptr = ptr;
 
-                    try self.scope.?.scope.append(new_current.*);
+                    try self.scope.?.resolved_services.add(new_current.*);
                     errdefer self.allocator.destroy(ptr.?);
                 } else {
                     new_current.ptr = ptr;
@@ -408,16 +399,15 @@ pub const ServiceProvider = struct {
     }
 
     pub fn initScope(self: *Self) !*Scope {
-        var sp = self.clone();
+        var sp = try self.clone();
+
         const scope_ptr = try self.allocator.create(Scope);
+        errdefer self.allocator.destroy(scope_ptr);
+
         sp.scope = scope_ptr;
 
-        scope_ptr.* = Scope.init(sp, self.allocator);
+        scope_ptr.* = try Scope.init(sp, self.allocator);
         return scope_ptr;
-    }
-
-    fn clone(self: *Self) Self {
-        return Self.init(self.allocator, self.container);
     }
 };
 
@@ -432,7 +422,7 @@ pub const Scope = struct {
     const Self = @This();
 
     sp: ServiceProvider, // Reference to the parent ServiceProvider managing this scope.
-    scope: std.ArrayList(Resolved), // List of dependencies instantiated within this scope.
+    resolved_services: ResolvedServices, // List of dependencies instantiated within this scope.
     allocator: std.mem.Allocator, // Allocator for memory operations within the scope.
 
     /// Initializes a new Scope instance.
@@ -443,10 +433,10 @@ pub const Scope = struct {
     ///
     /// Returns:
     /// - A new instance of Scope.
-    pub fn init(sp: ServiceProvider, allocator: std.mem.Allocator) Self {
+    pub fn init(sp: ServiceProvider, allocator: std.mem.Allocator) !Self {
         return Self{
             .sp = sp,
-            .scope = std.ArrayList(Resolved).init(allocator),
+            .resolved_services = try ResolvedServices.init(allocator),
             .allocator = allocator,
         };
     }
@@ -468,11 +458,7 @@ pub const Scope = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        for (self.scope.items) |*r| {
-            r.deinit();
-        }
-
-        self.scope.deinit();
+        self.resolved_services.deinit();
 
         self.sp.deinit();
         self.allocator.destroy(self.sp.scope.?);
@@ -659,3 +645,36 @@ fn ServiceProviderBuilder(comptime T: type) type {
         }
     };
 }
+
+const ResolvedServices = struct {
+    const Self = @This();
+
+    items: *std.StringHashMap(Resolved),
+    allocator: std.mem.Allocator,
+
+    pub fn init(a: std.mem.Allocator) !Self {
+        const items_ptr = try a.create(std.StringHashMap(Resolved));
+        items_ptr.* = std.StringHashMap(Resolved).init(a);
+
+        return Self{ .items = items_ptr, .allocator = a };
+    }
+
+    pub fn deinit(self: *Self) void {
+        var iter = self.items.valueIterator();
+        while (iter.next()) |r| {
+            r.deinit();
+        }
+
+        self.items.deinit();
+        self.allocator.destroy(self.items);
+    }
+
+    pub fn get(self: *Self, name: []const u8) ?*anyopaque {
+        const result = self.items.get(name) orelse return null;
+        return result.ptr;
+    }
+
+    pub fn add(self: *Self, resolved: Resolved) !void {
+        try self.items.put(resolved.info.?.getName(), resolved);
+    }
+};
