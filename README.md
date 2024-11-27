@@ -1,3 +1,5 @@
+[![CI](https://github.com/AleksandrShadrin/di.zig/actions/workflows/ci.yml/badge.svg)](https://github.com/AleksandrShadrin/di.zig/actions/workflows/ci.yml)
+
 Zig DI Container 🚀
 
 A simple and lightweight Dependency Injection (DI) container for Zig. Manage your dependencies effortlessly and keep your code clean!
