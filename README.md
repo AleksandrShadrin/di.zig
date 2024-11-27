@@ -82,11 +82,15 @@ Get instances of your services when needed.
 ```zig
 const myService = try serviceProvider.resolve(MyService);
 ```
-## Resolving Generics
+## Handle Generics
 
 Handle generic types with ease.
 
 ```zig
+// register
+try container.registerSingleton(MyService);
+...
+// resolve
 const genericService = try serviceProvider.resolve(di.Generic(MyService, .{u8}));
 ```
 ## Using Scopes
