@@ -267,3 +267,17 @@ test "Service Provider - Should validate generics for cycles" {
     const service = sp.resolve(services.B);
     try std.testing.expectError(di.ServiceProviderError.CycleDependency, service);
 }
+
+test "Service Provider - Should correctly resolve generics" {
+    const allocator = std.testing.allocator;
+    var container = Container.init(allocator);
+    defer container.deinit();
+
+    const services = @import("assets/services_correct_generics.zig");
+    try container.registerTransient(services.A);
+
+    var sp = try container.createServiceProvider();
+    defer sp.deinit();
+
+    _ = try sp.resolve(di.Generic(services.A, .{u8}));
+}
