@@ -7,7 +7,7 @@ A simple and lightweight Dependency Injection (DI) container for Zig. Manage you
 * Transients: New instance every time.
 * Scoped Services: Manage lifetimes within scopes.
 * Generics Support: Work with generic types smoothly.
-* Error Handling: Gracefully handle errors when creaing/allocating services
+* Error Handling: Gracefully handle errors when creating/allocating services
 
 🛠️ Installation
 
@@ -73,8 +73,9 @@ Resolve Services
 
 Get instances of your services when needed.
 
-zig
+```zig
 const myService = try serviceProvider.resolve(MyService);
+```
 Resolving Generics
 
 Handle generic types with ease.
