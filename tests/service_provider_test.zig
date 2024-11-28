@@ -281,3 +281,55 @@ test "Service Provider - Should correctly resolve generics" {
 
     _ = try sp.resolve(di.Generic(services.A, .{u8}));
 }
+
+test "Service Provider - Should return UnresolveLifeCycleShouldBeTransient when try unresolve service with no transient life cycle" {
+    const allocator = std.testing.allocator;
+    var container = Container.init(allocator);
+    defer container.deinit();
+
+    const services = @import("assets/services_correct_generics.zig");
+    try container.registerSingleton(services.A(u5));
+    try container.registerScoped(services.A(u6));
+    try container.registerTransient(services.A(u7));
+
+    var sp = try container.createServiceProvider();
+    defer sp.deinit();
+
+    const singleton = try sp.resolve(services.A(u5));
+
+    var err = sp.unresolve(singleton);
+    try std.testing.expectError(di.ServiceProviderError.UnresolveLifeCycleShouldBeTransient, err);
+
+    const scope = try sp.initScope();
+    defer scope.deinit();
+
+    const scoped = try scope.resolve(services.A(u6));
+
+    err = scope.sp.unresolve(scoped);
+    try std.testing.expectError(di.ServiceProviderError.UnresolveLifeCycleShouldBeTransient, err);
+
+    const transient = try sp.resolve(services.A(u7));
+
+    try sp.unresolve(transient);
+}
+
+test "Service Provider - Should return NoResolveContextFound when try unresolve pointer created not by provider" {
+    const allocator = std.testing.allocator;
+    var container = Container.init(allocator);
+    defer container.deinit();
+
+    const services = @import("assets/simple_dependency.zig");
+    try container.registerTransient(services.A);
+
+    var sp = try container.createServiceProvider();
+    defer sp.deinit();
+
+    const p = try allocator.create(services.A);
+    defer allocator.destroy(p);
+
+    const err = sp.unresolve(p);
+    try std.testing.expectError(di.ServiceProviderError.NoResolveContextFound, err);
+
+    const sp_p = try sp.resolve(services.A);
+    try sp.unresolve(sp_p);
+}
