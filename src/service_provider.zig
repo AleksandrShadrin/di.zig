@@ -5,6 +5,8 @@ const dependency = @import("dependency.zig");
 const builder = @import("builder.zig");
 const generic = @import("generics.zig");
 
+const Mutex = std.Thread.Mutex;
+
 // Define custom errors specific to the ServiceProvider's operations.
 // These errors are used to handle various failure scenarios during dependency resolution.
 pub const ServiceProviderError = error{
@@ -30,9 +32,9 @@ pub const ServiceProvider = struct {
     container: *container.Container, // Points to the dependency container holding all service registrations.
     allocator: std.mem.Allocator, // Allocator used for dynamic memory operations during resolution.
 
-    resolve_roots: std.ArrayList(Resolved), // Maintains a list of root resolution contexts for tracking.
+    transient_services: TransientResolvedServices, // Maintains a list of root resolution contexts for tracking.
 
-    singleton: ResolvedServices, // Stores instances of singleton services managed by the provider.
+    singleton: OnceResolvedServices, // Stores instances of singleton services managed by the provider.
 
     scope: ?*Scope = null,
 
@@ -48,8 +50,8 @@ pub const ServiceProvider = struct {
         return .{
             .allocator = a,
             .container = c,
-            .resolve_roots = std.ArrayList(Resolved).init(a),
-            .singleton = try ResolvedServices.init(a),
+            .transient_services = TransientResolvedServices.init(a),
+            .singleton = try OnceResolvedServices.init(a),
         };
     }
 
@@ -58,20 +60,15 @@ pub const ServiceProvider = struct {
             .singleton = self.singleton,
             .allocator = self.allocator,
             .container = self.container,
-            .resolve_roots = std.ArrayList(Resolved).init(self.allocator),
+            .transient_services = TransientResolvedServices.init(self.allocator),
         };
     }
 
     /// Deinitializes the ServiceProvider, ensuring all managed dependencies are properly cleaned up.
     pub fn deinit(self: *Self) void {
         // Iterate through all root resolution contexts and deinitialize transient dependencies.
-        for (self.resolve_roots.items) |*r| {
-            if (r.info.?.life_cycle == .transient)
-                r.deinit();
-        }
+        self.transient_services.deinit();
 
-        // Clean up the internal lists holding resolved roots and singletons.
-        self.resolve_roots.deinit();
         if (self.scope == null)
             self.singleton.deinit();
     }
@@ -99,20 +96,7 @@ pub const ServiceProvider = struct {
             return ServiceProviderError.UnresolveLifeCycleShouldBeTransient;
 
         // Search through all root resolution contexts to locate the matching dependency instance.
-        for (self.resolve_roots.items, 0..) |*ctx, i| {
-            if (ctx.ptr != null and
-                ctx.ptr.? == @as(*anyopaque, T))
-            {
-                // Remove the found resolve context from the roots and deinitialize it.
-                ctx.deinit();
-
-                defer _ = self.resolve_roots.swapRemove(i);
-                return;
-            }
-        }
-
-        // If no matching resolve context is found, return an appropriate error.
-        return ServiceProviderError.NoResolveContextFound;
+        if (!self.transient_services.delete(@as(*anyopaque, T))) return ServiceProviderError.NoResolveContextFound;
     }
 
     /// Determines the error type based on the type `T` being resolved.
@@ -177,7 +161,7 @@ pub const ServiceProvider = struct {
 
         // Append the fully resolved context to the list of resolve roots.
         if (ctx.active_root.?.info.?.life_cycle == .transient)
-            try self.resolve_roots.append(ctx.active_root.?);
+            try self.transient_services.add(ctx.active_root.?);
 
         return resolved;
     }
@@ -422,7 +406,7 @@ pub const Scope = struct {
     const Self = @This();
 
     sp: ServiceProvider, // Reference to the parent ServiceProvider managing this scope.
-    resolved_services: ResolvedServices, // List of dependencies instantiated within this scope.
+    resolved_services: OnceResolvedServices, // List of dependencies instantiated within this scope.
     allocator: std.mem.Allocator, // Allocator for memory operations within the scope.
 
     /// Initializes a new Scope instance.
@@ -436,7 +420,7 @@ pub const Scope = struct {
     pub fn init(sp: ServiceProvider, allocator: std.mem.Allocator) !Self {
         return Self{
             .sp = sp,
-            .resolved_services = try ResolvedServices.init(allocator),
+            .resolved_services = try OnceResolvedServices.init(allocator),
             .allocator = allocator,
         };
     }
@@ -646,17 +630,23 @@ fn ServiceProviderBuilder(comptime T: type) type {
     };
 }
 
-const ResolvedServices = struct {
+const OnceResolvedServices = struct {
     const Self = @This();
 
     items: *std.StringHashMap(Resolved),
     allocator: std.mem.Allocator,
 
+    mutex: Mutex,
+
     pub fn init(a: std.mem.Allocator) !Self {
         const items_ptr = try a.create(std.StringHashMap(Resolved));
         items_ptr.* = std.StringHashMap(Resolved).init(a);
 
-        return Self{ .items = items_ptr, .allocator = a };
+        return Self{
+            .items = items_ptr,
+            .allocator = a,
+            .mutex = Mutex{},
+        };
     }
 
     pub fn deinit(self: *Self) void {
@@ -675,6 +665,56 @@ const ResolvedServices = struct {
     }
 
     pub fn add(self: *Self, resolved: Resolved) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         try self.items.put(resolved.info.?.getName(), resolved);
+    }
+};
+
+const TransientResolvedServices = struct {
+    const Self = @This();
+
+    items: std.ArrayList(Resolved),
+    allocator: std.mem.Allocator,
+
+    mutex: Mutex,
+
+    pub fn init(a: std.mem.Allocator) Self {
+        return Self{
+            .items = std.ArrayList(Resolved).init(a),
+            .allocator = a,
+            .mutex = Mutex{},
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        for (self.items.items) |*r| {
+            r.deinit();
+        }
+
+        self.items.deinit();
+    }
+
+    pub fn delete(self: *Self, ptr: *anyopaque) bool {
+        for (self.items.items, 0..) |*ctx, i| {
+            if (ctx.ptr != null and
+                ctx.ptr.? == ptr)
+            {
+                ctx.deinit();
+
+                defer _ = self.items.swapRemove(i);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    pub fn add(self: *Self, resolved: Resolved) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        try self.items.append(resolved);
     }
 };
