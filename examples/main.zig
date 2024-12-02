@@ -9,67 +9,70 @@ const Writer = struct {
     }
 };
 
-const App = struct {
+const Mediatr = struct {
     const Self = @This();
 
-    container: *di.Container,
-    controller_actions: std.StringHashMap(*const fn (*di.Scope) anyerror!void),
+    sp: *di.ServiceProvider,
 
-    pub fn init(container: *di.Container, allocator: std.mem.Allocator) !Self {
-        try container.registerScoped(Payload);
-
+    pub fn init(sp: *di.ServiceProvider) Self {
         return Self{
-            .container = container,
-            .controller_actions = std.StringHashMap(*const fn (*di.Scope) anyerror!void).init(allocator),
+            .sp = sp,
         };
     }
 
-    pub fn deinit(self: *Self) void {
-        self.container.deinit();
-        self.controller_actions.deinit();
-    }
+    pub fn addHandler(container: *di.Container, HandlerType: type, Request: type) !void {
+        try container.registerScoped(HandlerType);
 
-    pub fn addView(self: *Self, path: []const u8, view: type, request: type) !void {
-        try self.container.registerScoped(view);
-
-        const adapter = struct {
-            pub fn adapt(scope: *di.Scope) !void {
-                const v = try scope.resolve(view);
-                const payload = try scope.resolve(Payload);
-
-                const request_deserialized = try std.json.parseFromSlice(request, scope.allocator, payload.data.?, .{});
-                defer request_deserialized.deinit();
-
-                try v.handle(request_deserialized.value);
+        const create_handler = struct {
+            pub fn create_handler(sp: *di.ServiceProvider) !Handler(Request) {
+                const h = try sp.resolve(HandlerType);
+                return Handler(Request){
+                    .ctx = h,
+                    .handle_fn = call_handler,
+                    .deinit_fn = deinit_handler,
+                    .sp = sp,
+                };
             }
-        };
 
-        try self.controller_actions.put(path, adapter.adapt);
+            pub fn call_handler(ctx: *anyopaque, request: Request) !void {
+                const h: *HandlerType = @ptrCast(@alignCast(ctx));
+                try h.handle(request);
+            }
+
+            pub fn deinit_handler(handler: *Handler(Request)) !void {
+                const h: *HandlerType = @ptrCast(@alignCast(handler.ctx));
+                try handler.sp.unresolve(h);
+            }
+        }.create_handler;
+
+        try container.registerScopedWithFactory(create_handler);
     }
 
-    pub fn run(self: *Self) !void {
-        const route = "/";
-        const greet_payload =
-            \\{ "name" : "Aleksandr" }
-        ;
-
-        var sp = try self.container.createServiceProvider();
-        defer sp.deinit();
-
-        while (true) {
-            const scope = try sp.initScope();
-            defer scope.deinit();
-
-            const payload = try scope.resolve(Payload);
-            payload.data = greet_payload;
-
-            const f = self.controller_actions.get(route) orelse return std.debug.print("No action registered", .{});
-            try f(scope);
-
-            break;
-        }
+    pub fn send(self: Self, request: anytype) !void {
+        const handler = try self.sp.resolve(Handler(@TypeOf(request)));
+        try handler.handle(request);
     }
 };
+
+pub fn Handler(Request: type) type {
+    return struct {
+        const Self = @This();
+
+        ctx: *anyopaque,
+        sp: *di.ServiceProvider,
+
+        handle_fn: *const fn (*anyopaque, Request) anyerror!void,
+        deinit_fn: *const fn (*Self) anyerror!void,
+
+        pub fn deinit(self: *Self) void {
+            self.deinit_fn(self) catch {};
+        }
+
+        pub fn handle(self: Self, request: Request) !void {
+            try self.handle_fn(self.ctx, request);
+        }
+    };
+}
 
 const Payload = struct {
     data: ?[]const u8,
@@ -87,9 +90,10 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     var container = di.Container.init(allocator);
+    defer container.deinit();
 
     // Create controllers for different model types
-    const GreetView = struct {
+    const GreetHandler = struct {
         const Self = @This();
         const Request = struct {
             name: []const u8,
@@ -139,11 +143,19 @@ pub fn main() !void {
     }.get_writer;
 
     try container.registerScopedWithFactory(get_writer);
+    try container.registerScoped(Mediatr);
 
-    var app = try App.init(&container, allocator);
+    try Mediatr.addHandler(&container, GreetHandler, GreetHandler.Request);
 
-    try app.addView("/", GreetView, GreetView.Request);
+    var sp = try container.createServiceProvider();
+    defer sp.deinit();
 
-    try app.run();
-    defer app.deinit();
+    var scope = try sp.initScope();
+    defer scope.deinit();
+
+    var mediatr = try scope.resolve(Mediatr);
+
+    try mediatr.send(GreetHandler.Request{
+        .name = "Aleksandr",
+    });
 }
