@@ -1,8 +1,6 @@
 const std = @import("std");
 const di = @import("di");
 
-const ArrayList = std.ArrayList;
-
 const Writer = struct {
     write_fn: *const fn ([]const u8) anyerror!void,
 
