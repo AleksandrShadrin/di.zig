@@ -171,6 +171,6 @@ pub fn main() !void {
 
 This example sets up a simple DI container, registers a Logger as a singleton and Database as a transient service, then resolves and uses them.
 
-📄 License
+## 📄 License
 
 This project is MIT licensed. See the LICENSE file for details.
