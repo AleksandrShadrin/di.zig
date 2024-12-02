@@ -2,7 +2,7 @@
 
 # Zig DI Container 🚀
 
-A simple and lightweight Dependency Injection (DI) container for Zig. Manage your dependencies effortlessly and keep your code clean!
+A simple and lightweight dependency injection (DI) container for Zig. Manage your dependencies effortlessly and keep your code clean!
 
 📦 Features
 * Singletons: One instance throughout the app.
