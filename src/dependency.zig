@@ -26,6 +26,7 @@ pub const LifeCycle = enum {
 // Structure representing a single dependency
 const Dependency = struct {
     name: []const u8,
+    is_generic: bool,
 };
 
 // Interface for dependency information
@@ -106,9 +107,15 @@ pub fn DependencyInfo(comptime T: type) type {
                     const deref_dep = utilities.deref(dep);
 
                     if (generics.isGeneric(deref_dep)) {
-                        self.dep_array[i] = Dependency{ .name = generics.getName(deref_dep) };
+                        self.dep_array[i] = Dependency{
+                            .name = generics.getName(deref_dep),
+                            .is_generic = true,
+                        };
                     } else {
-                        self.dep_array[i] = Dependency{ .name = @typeName(deref_dep) };
+                        self.dep_array[i] = Dependency{
+                            .name = @typeName(deref_dep),
+                            .is_generic = false,
+                        };
                     }
 
                     // Ensure that the dependency should be a reference
@@ -215,5 +222,3 @@ fn Destructor(comptime T: type) type {
         }
     };
 }
-
-const DependencyInfoConfiguration = struct { is_generic: bool, with_custom_builder: bool };

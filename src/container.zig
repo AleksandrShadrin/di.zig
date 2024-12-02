@@ -153,8 +153,8 @@ pub const Container = struct {
                 var visited = std.StringHashMap(bool).init(self.allocator);
                 defer visited.deinit();
 
-                try self.checkTransitiveDependencies(di, dep.name, &visited);
-                try self.checkDependenciesLifeCycles(di);
+                if (!dep.is_generic) try self.checkTransitiveDependencies(di, dep.name, &visited);
+                if (!dep.is_generic) try self.checkDependenciesLifeCycles(di);
             }
         }
     }
@@ -181,7 +181,7 @@ pub const Container = struct {
             const dep_info = self.dependencies.get(dep.name);
 
             // Validate that the dependency exists or is allowed
-            try checkDependencyValid(dep_info, dep.name);
+            if (!dep.is_generic) try checkDependencyValid(dep_info, dep.name);
 
             if (dep_info == null) {
                 return;
@@ -247,7 +247,7 @@ pub const Container = struct {
             }
 
             // Recursively check transitive dependencies
-            try self.checkTransitiveDependencies(check, dep.name, visited);
+            if (!dep.is_generic) try self.checkTransitiveDependencies(check, dep.name, visited);
         }
     }
 };
