@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub fn build(b: *std.Build) void {
+pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
 
     const optimize = b.standardOptimizeOption(.{});
@@ -9,29 +9,52 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/di.zig"),
     });
 
-    {
-        const exe = b.addExecutable(.{
-            .name = "zig",
-            .root_source_file = b.path("examples/main.zig"),
+    inline for ([_]struct {
+        name: []const u8,
+        src: []const u8,
+    }{
+        .{ .name = "mediatr", .src = "examples/mediatr.zig" },
+        .{ .name = "deinit", .src = "examples/deinit.zig" },
+        .{ .name = "simple", .src = "examples/simple.zig" },
+    }) |excfg| {
+        const ex_name = excfg.name;
+        const ex_src = excfg.src;
+
+        const ex_build_desc = try std.fmt.allocPrint(
+            b.allocator,
+            "build the {s} example",
+            .{ex_name},
+        );
+        const ex_run_stepname = try std.fmt.allocPrint(
+            b.allocator,
+            "run-{s}",
+            .{ex_name},
+        );
+        const ex_run_stepdesc = try std.fmt.allocPrint(
+            b.allocator,
+            "run the {s} example",
+            .{ex_name},
+        );
+        const example_run_step = b.step(ex_run_stepname, ex_run_stepdesc);
+        const example_step = b.step(ex_name, ex_build_desc);
+
+        var example = b.addExecutable(.{
+            .name = ex_name,
+            .root_source_file = b.path(ex_src),
             .target = target,
             .optimize = optimize,
-            .strip = false,
         });
 
-        exe.root_module.addImport("di", di_module);
+        example.root_module.addImport("di", di_module);
 
-        b.installArtifact(exe);
+        // const example_run = example.run();
+        const example_run = b.addRunArtifact(example);
+        example_run_step.dependOn(&example_run.step);
 
-        const run_cmd = b.addRunArtifact(exe);
+        // install the artifact - depending on the "example"
+        const example_build_step = b.addInstallArtifact(example, .{});
 
-        run_cmd.step.dependOn(b.getInstallStep());
-
-        if (b.args) |args| {
-            run_cmd.addArgs(args);
-        }
-
-        const run_step = b.step("run", "Run the app");
-        run_step.dependOn(&run_cmd.step);
+        example_step.dependOn(&example_build_step.step);
     }
 
     {

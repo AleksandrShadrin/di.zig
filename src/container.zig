@@ -121,9 +121,9 @@ pub const Container = struct {
     }
 
     // New Feature: Retrieve IDependencyInfo by type T
-    pub fn getDependencyInfo(self: *Self, comptime T: type) ?IDependencyInfo {
+    pub fn getDependencyInfo(self: *Self, comptime T: type) ?*IDependencyInfo {
         const typeName = @typeName(T);
-        return self.dependencies.get(typeName);
+        return self.dependencies.getPtr(typeName);
     }
 
     pub fn getGenericWrapper(self: *Self, comptime T: type) ?IDependencyInfo {

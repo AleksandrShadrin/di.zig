@@ -455,7 +455,8 @@ const Resolved = struct {
     const Self = @This();
 
     ptr: ?*anyopaque = null, // Pointer to the instantiated dependency instance.
-    info: ?IDependencyInfo = null, // Interface information for the dependency, including lifecycle and deinit function.
+
+    info: ?*IDependencyInfo = null, // Interface information for the dependency, including lifecycle and deinit function.
 
     child: std.ArrayList(Resolved), // List of nested dependencies resolved by this dependency.
 
@@ -701,9 +702,9 @@ const TransientResolvedServices = struct {
             if (ctx.ptr != null and
                 ctx.ptr.? == ptr)
             {
-                ctx.deinit();
+                var removed = self.items.swapRemove(i);
+                removed.deinit();
 
-                defer _ = self.items.swapRemove(i);
                 return true;
             }
         }
