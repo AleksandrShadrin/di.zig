@@ -50,6 +50,7 @@ pub fn main() !void {
     try container.registerTransient(Logger);
 
     var sp = try container.createServiceProvider();
+
     defer {
         std.debug.print("after unresolving\n", .{});
         sp.deinit();

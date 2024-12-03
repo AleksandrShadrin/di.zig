@@ -32,41 +32,44 @@ const Dependency = struct {
 // Interface for dependency information
 pub const IDependencyInfo = struct {
     ptr: *anyopaque,
-    destroy_fn: *const fn (*anyopaque, std.mem.Allocator) void, // destroy ptr object
 
-    get_dependencies_fn: *const fn (ctx: *anyopaque) []const Dependency,
-    get_name_fn: *const fn (ctx: *anyopaque) []const u8,
-    deinit_fn: *const fn (ctx: *anyopaque, std.mem.Allocator) void,
-    verify_fn: *const fn (ctx: *anyopaque) void,
-    is_verified_fn: *const fn (ctx: *anyopaque) bool,
+    vtable: struct {
+        destroy_fn: *const fn (*anyopaque, std.mem.Allocator) void, // destroy ptr object
+
+        get_dependencies_fn: *const fn (ctx: *anyopaque) []const Dependency,
+        get_name_fn: *const fn (ctx: *anyopaque) []const u8,
+        deinit_fn: *const fn (ctx: *anyopaque, std.mem.Allocator) void,
+        verify_fn: *const fn (ctx: *anyopaque) void,
+        is_verified_fn: *const fn (ctx: *anyopaque) bool,
+    },
 
     life_cycle: LifeCycle,
 
     /// Retrieves the list of dependencies
     pub fn getDependencies(self: *const IDependencyInfo) []const Dependency {
-        return self.get_dependencies_fn(self.ptr);
+        return self.vtable.get_dependencies_fn(self.ptr);
     }
 
     /// Retrieves the name of the dependency
     pub fn getName(self: *const IDependencyInfo) []const u8 {
-        return self.get_name_fn(self.ptr);
+        return self.vtable.get_name_fn(self.ptr);
     }
 
     /// Deinitializes the dependency
     pub fn deinit(self: *const IDependencyInfo, ptr: *anyopaque, allocator: std.mem.Allocator) void {
-        return self.deinit_fn(ptr, allocator);
+        return self.vtable.deinit_fn(ptr, allocator);
     }
 
     pub fn verify(self: *IDependencyInfo) void {
-        self.verify_fn(self.ptr);
+        self.vtable.verify_fn(self.ptr);
     }
 
     pub fn isVerified(self: *const IDependencyInfo) bool {
-        return self.is_verified_fn(self.ptr);
+        return self.vtable.is_verified_fn(self.ptr);
     }
 
     pub fn destroy(self: *const IDependencyInfo, allocator: std.mem.Allocator) void {
-        self.destroy_fn(self.ptr, allocator);
+        self.vtable.destroy_fn(self.ptr, allocator);
     }
 };
 
@@ -142,13 +145,15 @@ pub fn DependencyInfo(comptime T: type) type {
         pub fn getInterface(self: *Self) IDependencyInfo {
             return IDependencyInfo{
                 .ptr = self,
-                .get_dependencies_fn = Self.getDependencies,
-                .get_name_fn = Self.getName,
-                .deinit_fn = Self.deinit,
+                .vtable = .{
+                    .get_dependencies_fn = Self.getDependencies,
+                    .get_name_fn = Self.getName,
+                    .deinit_fn = Self.deinit,
+                    .destroy_fn = Self.destroy,
+                    .verify_fn = Self.verify,
+                    .is_verified_fn = Self.isVerified,
+                },
                 .life_cycle = self.life_cycle,
-                .destroy_fn = Self.destroy,
-                .verify_fn = Self.verify,
-                .is_verified_fn = Self.isVerified,
             };
         }
 

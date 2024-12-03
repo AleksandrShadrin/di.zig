@@ -47,6 +47,8 @@ pub fn build(b: *std.Build) !void {
 
         example.root_module.addImport("di", di_module);
 
+        b.installArtifact(example);
+
         // const example_run = example.run();
         const example_run = b.addRunArtifact(example);
         example_run_step.dependOn(&example_run.step);
