@@ -38,7 +38,8 @@ pub const IDependencyInfo = struct {
 
         get_dependencies_fn: *const fn (ctx: *anyopaque) []const Dependency,
         get_name_fn: *const fn (ctx: *anyopaque) []const u8,
-        deinit_fn: *const fn (ctx: *anyopaque, std.mem.Allocator) void,
+        call_deinit_fn: *const fn (ctx: *anyopaque) void,
+        destroy_dependency: *const fn (*anyopaque, std.mem.Allocator) void, // destroy ptr object
         verify_fn: *const fn (ctx: *anyopaque) void,
         is_verified_fn: *const fn (ctx: *anyopaque) bool,
     },
@@ -56,8 +57,13 @@ pub const IDependencyInfo = struct {
     }
 
     /// Deinitializes the dependency
-    pub fn deinit(self: *const IDependencyInfo, ptr: *anyopaque, allocator: std.mem.Allocator) void {
-        return self.vtable.deinit_fn(ptr, allocator);
+    pub fn callDeinit(self: *const IDependencyInfo, ptr: *anyopaque) void {
+        return self.vtable.call_deinit_fn(ptr);
+    }
+
+    /// Deinitializes the dependency
+    pub fn destroyDependency(self: *const IDependencyInfo, ptr: *anyopaque, allocator: std.mem.Allocator) void {
+        return self.vtable.destroy_dependency(ptr, allocator);
     }
 
     pub fn verify(self: *IDependencyInfo) void {
@@ -148,8 +154,9 @@ pub fn DependencyInfo(comptime T: type) type {
                 .vtable = .{
                     .get_dependencies_fn = Self.getDependencies,
                     .get_name_fn = Self.getName,
-                    .deinit_fn = Self.deinit,
-                    .destroy_fn = Self.destroy,
+                    .call_deinit_fn = Self.callDeinit,
+                    .destroy_fn = Self.destroySelf,
+                    .destroy_dependency = Self.destroyDependency,
                     .verify_fn = Self.verify,
                     .is_verified_fn = Self.isVerified,
                 },
@@ -175,17 +182,20 @@ pub fn DependencyInfo(comptime T: type) type {
         }
 
         /// Deinitializes the dependency if necessary
-        fn deinit(ptr: *anyopaque, allocator: std.mem.Allocator) void {
+        fn callDeinit(ptr: *anyopaque) void {
             const item: *DerefT = @ptrCast(@alignCast(ptr));
 
             Destructor(DerefT).deinit(item) catch |err| {
                 std.log.err("Error when deinit {any} with error {any}", .{ DerefT, err });
             };
+        }
 
+        fn destroyDependency(ptr: *anyopaque, allocator: std.mem.Allocator) void {
+            const item: *DerefT = @ptrCast(@alignCast(ptr));
             allocator.destroy(item);
         }
 
-        fn destroy(ctx: *anyopaque, allocator: std.mem.Allocator) void {
+        fn destroySelf(ctx: *anyopaque, allocator: std.mem.Allocator) void {
             const self: *Self = @ptrCast(@alignCast(ctx));
             allocator.destroy(self);
         }
