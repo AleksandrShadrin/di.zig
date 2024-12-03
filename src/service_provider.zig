@@ -67,10 +67,10 @@ pub const ServiceProvider = struct {
     /// Deinitializes the ServiceProvider, ensuring all managed dependencies are properly cleaned up.
     pub fn deinit(self: *Self) void {
         // Iterate through all root resolution contexts and deinitialize transient dependencies.
-        self.transient_services.deinit();
+        self.transient_services.deinit(self);
 
         if (self.scope == null)
-            self.singleton.deinit();
+            self.singleton.deinit(self);
     }
 
     /// Unresolves (deinitializes) a previously resolved dependency along with its nested dependencies.
@@ -96,7 +96,7 @@ pub const ServiceProvider = struct {
             return ServiceProviderError.UnresolveLifeCycleShouldBeTransient;
 
         // Search through all root resolution contexts to locate the matching dependency instance.
-        if (!self.transient_services.delete(@as(*anyopaque, T))) return ServiceProviderError.NoResolveContextFound;
+        if (!self.transient_services.delete(@as(*anyopaque, T), self)) return ServiceProviderError.NoResolveContextFound;
     }
 
     /// Determines the error type based on the type `T` being resolved.
@@ -264,7 +264,7 @@ pub const ServiceProvider = struct {
         // Ensure that the resolution context is properly cleaned up in case of failure.
         errdefer {
             if (ctx.active_root != null) {
-                ctx.active_root.?.deinit();
+                ctx.active_root.?.deinit(self);
 
                 ctx.active_root = null;
             }
@@ -442,7 +442,7 @@ pub const Scope = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.resolved_services.deinit();
+        self.resolved_services.deinit(&self.sp);
 
         self.sp.deinit();
         self.allocator.destroy(self.sp.scope.?);
@@ -499,18 +499,18 @@ const Resolved = struct {
     }
 
     /// Deinitializes the Resolved instance, recursively cleaning up all nested dependencies.
-    pub fn deinit(self: *Self) void {
+    pub fn deinit(self: *Self, sp: *ServiceProvider) void {
         // Recursively deinitialize all child dependencies to ensure proper cleanup.
 
         for (self.child.items) |*child| {
-            child.inner_deinit();
+            child.inner_deinit(sp);
         }
 
         // Deinitialize the dependency instance if it exists.
         if (self.info != null and
             self.ptr != null)
         {
-            self.info.?.callDeinit(self.ptr.?);
+            self.info.?.callDeinit(self.ptr.?, sp);
             self.info.?.destroyDependency(self.ptr.?, self.allocator);
         }
 
@@ -519,7 +519,7 @@ const Resolved = struct {
     }
 
     /// Recursively deinitializes only transient dependencies within this Resolved context.
-    fn inner_deinit(self: *Self) void {
+    fn inner_deinit(self: *Self, sp: *ServiceProvider) void {
         // Skip deinitialization for non-transient dependencies to preserve their lifecycle.
         if (self.info != null and
             self.info.?.life_cycle != .transient)
@@ -529,14 +529,14 @@ const Resolved = struct {
 
         // Recursively deinitialize all child dependencies that are transient.
         for (self.child.items) |*child| {
-            child.inner_deinit();
+            child.inner_deinit(sp);
         }
 
         // Deinitialize the transient dependency instance if it exists.
         if (self.info != null and
             self.ptr != null)
         {
-            self.info.?.callDeinit(self.ptr.?);
+            self.info.?.callDeinit(self.ptr.?, sp);
             self.info.?.destroyDependency(self.ptr.?, self.allocator);
         }
 
@@ -653,10 +653,10 @@ const OnceResolvedServices = struct {
         };
     }
 
-    pub fn deinit(self: *Self) void {
+    pub fn deinit(self: *Self, sp: *ServiceProvider) void {
         var iter = self.items.valueIterator();
         while (iter.next()) |r| {
-            r.deinit();
+            r.deinit(sp);
         }
 
         self.items.deinit();
@@ -692,22 +692,22 @@ const TransientResolvedServices = struct {
         };
     }
 
-    pub fn deinit(self: *Self) void {
+    pub fn deinit(self: *Self, sp: *ServiceProvider) void {
         while (self.items.popOrNull()) |r| {
             var mut = r;
-            mut.deinit();
+            mut.deinit(sp);
         }
 
         self.items.deinit();
     }
 
-    pub fn delete(self: *Self, ptr: *anyopaque) bool {
+    pub fn delete(self: *Self, ptr: *anyopaque, sp: *ServiceProvider) bool {
         for (self.items.items, 0..) |*ctx, i| {
             if (ctx.ptr != null and
                 ctx.ptr.? == ptr)
             {
                 var removed = self.items.swapRemove(i);
-                removed.deinit();
+                removed.deinit(sp);
 
                 return true;
             }
