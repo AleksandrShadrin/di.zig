@@ -462,8 +462,6 @@ const Resolved = struct {
 
     allocator: std.mem.Allocator, // Allocator used for managing memory within this Resolved context.
 
-    deinitialized: bool = false, // Flag indicating whether the dependency has been deinitialized.
-
     /// Constructs an empty Resolved instance with an initialized child list.
     ///
     /// Parameters:
@@ -503,7 +501,6 @@ const Resolved = struct {
     /// Deinitializes the Resolved instance, recursively cleaning up all nested dependencies.
     pub fn deinit(self: *Self) void {
         // Recursively deinitialize all child dependencies to ensure proper cleanup.
-        self.deinitialized = true;
 
         for (self.child.items) |*child| {
             child.inner_deinit();
@@ -523,8 +520,6 @@ const Resolved = struct {
 
     /// Recursively deinitializes only transient dependencies within this Resolved context.
     fn inner_deinit(self: *Self) void {
-        self.deinitialized = true;
-
         // Skip deinitialization for non-transient dependencies to preserve their lifecycle.
         if (self.info != null and
             self.info.?.life_cycle != .transient)
@@ -712,8 +707,7 @@ const TransientResolvedServices = struct {
                 ctx.ptr.? == ptr)
             {
                 var removed = self.items.swapRemove(i);
-                if (!removed.deinitialized)
-                    removed.deinit();
+                removed.deinit();
 
                 return true;
             }
