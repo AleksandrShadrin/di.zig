@@ -698,8 +698,9 @@ const TransientResolvedServices = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        for (self.items.items) |*r| {
-            r.deinit();
+        while (self.items.popOrNull()) |r| {
+            var mut = r;
+            mut.deinit();
         }
 
         self.items.deinit();
