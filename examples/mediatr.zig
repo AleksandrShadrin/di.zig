@@ -85,7 +85,7 @@ const Payload = struct {
 };
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.GeneralPurposeAllocator(.{ .verbose_log = true }){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -125,6 +125,7 @@ pub fn main() !void {
                 \\<p>
                 \\</body>
                 \\</html>
+                \\
             );
         }
     };
@@ -143,6 +144,7 @@ pub fn main() !void {
     }.get_writer;
 
     try container.registerScopedWithFactory(get_writer);
+
     try container.registerScoped(Mediatr);
 
     try Mediatr.addHandler(&container, GreetHandler, GreetHandler.Request);
