@@ -30,7 +30,6 @@ const Mediatr = struct {
                     .ctx = h,
                     .handle_fn = call_handler,
                     .deinit_fn = deinit_handler,
-                    .sp = sp,
                 };
             }
 
@@ -39,9 +38,9 @@ const Mediatr = struct {
                 try h.handle(request);
             }
 
-            pub fn deinit_handler(handler: *Handler(Request)) !void {
+            pub fn deinit_handler(handler: *Handler(Request), sp: *di.ServiceProvider) !void {
                 const h: *HandlerType = @ptrCast(@alignCast(handler.ctx));
-                try handler.sp.unresolve(h);
+                try sp.unresolve(h);
             }
         }.create_handler;
 
@@ -51,6 +50,7 @@ const Mediatr = struct {
     pub fn send(self: Self, request: anytype) !void {
         const handler = try self.sp.resolve(Handler(@TypeOf(request)));
         try handler.handle(request);
+        self.sp.unresolve(handler) catch {};
     }
 };
 
@@ -59,13 +59,12 @@ pub fn Handler(Request: type) type {
         const Self = @This();
 
         ctx: *anyopaque,
-        sp: *di.ServiceProvider,
 
         handle_fn: *const fn (*anyopaque, Request) anyerror!void,
-        deinit_fn: *const fn (*Self) anyerror!void,
+        deinit_fn: *const fn (*Self, *di.ServiceProvider) anyerror!void,
 
-        pub fn deinit(self: *Self) void {
-            self.deinit_fn(self) catch {};
+        pub fn deinit(self: *Self, sp: *di.ServiceProvider) void {
+            self.deinit_fn(self, sp) catch {};
         }
 
         pub fn handle(self: Self, request: Request) !void {
@@ -143,8 +142,7 @@ pub fn main() !void {
         }
     }.get_writer;
 
-    try container.registerScopedWithFactory(get_writer);
-
+    try container.registerSingletonWithFactory(get_writer);
     try container.registerScoped(Mediatr);
 
     try Mediatr.addHandler(&container, GreetHandler, GreetHandler.Request);

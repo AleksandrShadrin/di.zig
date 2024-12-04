@@ -333,3 +333,57 @@ test "Service Provider - Should return NoResolveContextFound when try unresolve 
     const sp_p = try sp.resolve(services.A);
     try sp.unresolve(sp_p);
 }
+
+test "Service Provider - Should be able to pass itself on deinit call" {
+    const allocator = std.testing.allocator;
+
+    var container = Container.init(allocator);
+    defer container.deinit();
+
+    const statement = "ServiceProvider passed";
+
+    const Interceptor = @import("mocks/interceptor.zig").Interceptor;
+    const Service = struct {
+        pub fn init() @This() {
+            return .{};
+        }
+
+        pub fn deinit(self: @This(), sp: *di.ServiceProvider) !void {
+            _ = self;
+            var interceptor = try sp.resolve(Interceptor);
+            try interceptor.confirm(statement);
+        }
+    };
+
+    try container.registerSingleton(Interceptor);
+    try container.registerTransient(Service);
+
+    var sp = try container.createServiceProvider();
+    defer sp.deinit();
+
+    const service = try sp.resolve(Service);
+    try sp.unresolve(service);
+
+    const interceptor = try sp.resolve(Interceptor);
+    try interceptor.assert_confirmed(statement);
+}
+
+test "Service Provider - Should deinit correct for many resolved services" {
+    const allocator = std.testing.allocator;
+
+    var container = Container.init(allocator);
+    defer container.deinit();
+
+    const service = @import("assets/services_with_inner_resolve_and_deinit.zig");
+
+    try container.registerTransient(service.A);
+    try container.registerTransient(service.B);
+    try container.registerTransient(service.C);
+
+    var sp = try container.createServiceProvider();
+    defer sp.deinit();
+
+    _ = try sp.resolve(service.A);
+    _ = try sp.resolve(service.A);
+    _ = try sp.resolve(service.A);
+}

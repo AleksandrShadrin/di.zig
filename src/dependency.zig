@@ -38,8 +38,8 @@ pub const IDependencyInfo = struct {
 
         get_dependencies_fn: *const fn (ctx: *anyopaque) []const Dependency,
         get_name_fn: *const fn (ctx: *anyopaque) []const u8,
-        call_deinit_fn: *const fn (ctx: *anyopaque) void,
-        destroy_dependency: *const fn (*anyopaque, std.mem.Allocator) void, // destroy ptr object
+        call_deinit_fn: *const fn (ctx: *anyopaque, sp: *ServiceProvider) void,
+        destroy_dependency_fn: *const fn (*anyopaque, std.mem.Allocator) void, // destroy ptr object
         verify_fn: *const fn (ctx: *anyopaque) void,
         is_verified_fn: *const fn (ctx: *anyopaque) bool,
     },
@@ -57,13 +57,13 @@ pub const IDependencyInfo = struct {
     }
 
     /// Deinitializes the dependency
-    pub fn callDeinit(self: *const IDependencyInfo, ptr: *anyopaque) void {
-        return self.vtable.call_deinit_fn(ptr);
+    pub fn callDeinit(self: *const IDependencyInfo, ptr: *anyopaque, sp: *ServiceProvider) void {
+        return self.vtable.call_deinit_fn(ptr, sp);
     }
 
     /// Deinitializes the dependency
     pub fn destroyDependency(self: *const IDependencyInfo, ptr: *anyopaque, allocator: std.mem.Allocator) void {
-        return self.vtable.destroy_dependency(ptr, allocator);
+        return self.vtable.destroy_dependency_fn(ptr, allocator);
     }
 
     pub fn verify(self: *IDependencyInfo) void {
@@ -156,7 +156,7 @@ pub fn DependencyInfo(comptime T: type) type {
                     .get_name_fn = Self.getName,
                     .call_deinit_fn = Self.callDeinit,
                     .destroy_fn = Self.destroySelf,
-                    .destroy_dependency = Self.destroyDependency,
+                    .destroy_dependency_fn = Self.destroyDependency,
                     .verify_fn = Self.verify,
                     .is_verified_fn = Self.isVerified,
                 },
@@ -182,10 +182,10 @@ pub fn DependencyInfo(comptime T: type) type {
         }
 
         /// Deinitializes the dependency if necessary
-        fn callDeinit(ptr: *anyopaque) void {
+        fn callDeinit(ptr: *anyopaque, sp: *ServiceProvider) void {
             const item: *DerefT = @ptrCast(@alignCast(ptr));
 
-            Destructor(DerefT).deinit(item) catch |err| {
+            Destructor(DerefT).deinit(item, sp) catch |err| {
                 std.log.err("Error when deinit {any} with error {any}", .{ DerefT, err });
             };
         }
@@ -216,23 +216,40 @@ pub fn DependencyInfo(comptime T: type) type {
 fn Destructor(comptime T: type) type {
     return struct {
         /// Deinitializes an instance of `T`
-        pub fn deinit(t: *T) !void {
+        pub fn deinit(t: *T, sp: *ServiceProvider) !void {
             // Check if `T` has a `deinit` method
             if (!std.meta.hasFn(T, "deinit")) return;
 
             const deinit_fn_type = @typeInfo(@TypeOf(T.deinit)).Fn;
 
             // Ensure `deinit` has exactly one parameter
-            if (deinit_fn_type.params.len != 1 or
-                (deinit_fn_type.params[0].type != *T and
+            if ((deinit_fn_type.params[0].type != *T and
                 deinit_fn_type.params[0].type != T))
                 @compileError("deinit should have one parameter for " ++ @typeName(T) ++ " and have single arg as *Self");
 
-            // Handle `deinit` based on its return type
-            if (@typeInfo(deinit_fn_type.return_type.?) != .ErrorUnion) {
-                t.deinit();
-            } else {
-                return try t.deinit();
+            switch (deinit_fn_type.params.len) {
+                2 => {
+                    if (utilities.deref(deinit_fn_type.params[0].type.?) != T or
+                        deinit_fn_type.params[1].type.? != *ServiceProvider)
+                        @compileError("deinit should have siganture fn (*Self, *ServiceProvider)");
+
+                    if (@typeInfo(deinit_fn_type.return_type.?) != .ErrorUnion) {
+                        t.deinit(sp);
+                    } else {
+                        return try t.deinit(sp);
+                    }
+                },
+                1 => {
+                    if (utilities.deref(deinit_fn_type.params[0].type.?) != T)
+                        @compileError("deinit should have siganture fn (*Self)");
+
+                    if (@typeInfo(deinit_fn_type.return_type.?) != .ErrorUnion) {
+                        t.deinit();
+                    } else {
+                        return try t.deinit();
+                    }
+                },
+                else => @compileError("deinit should have siganture fn (*Self, *ServiceProvider) or fn (*Self) or fn (Self)"),
             }
         }
     };

@@ -3,14 +3,12 @@ const di = @import("di");
 
 const Database = struct {
     logger: *Logger,
-    sp: *di.ServiceProvider,
 
     pub fn init(sp: *di.ServiceProvider) !Database {
         // resolving inside, so Logger not tracked by sp
         const logger = try sp.resolve(Logger);
         return Database{
             .logger = logger,
-            .sp = sp,
         };
     }
 
@@ -20,10 +18,10 @@ const Database = struct {
         self.logger.log("End processing...");
     }
 
-    pub fn deinit(self: *Database) !void {
+    pub fn deinit(self: *Database, sp: *di.ServiceProvider) !void {
         // manually deleting in case of Logger has transient lifecycle, else it will return error
         std.debug.print("unresolving database\n", .{});
-        self.sp.unresolve(self.logger) catch |err| {
+        sp.unresolve(self.logger) catch |err| {
             if (err == di.ServiceProviderError.UnresolveLifeCycleShouldBeTransient) {
                 std.debug.print("Logger was singleton or scoped\n", .{});
                 return;
