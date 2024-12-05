@@ -470,6 +470,5 @@ test "Service Provider - Should deinit inner resolve dependency on both fail bui
     const a = sp.resolve(service.A);
     try std.testing.expectError(service.err.some_error, a);
 
-    // leaked
     try std.testing.expect(sp.transient_services.items.items.len == 0);
 }
