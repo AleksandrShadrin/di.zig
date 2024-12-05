@@ -449,3 +449,27 @@ test "Service Provider - Should leak inner resolve dependency on fail build" {
     // leaked
     try std.testing.expect(sp.transient_services.items.items.len == 1);
 }
+
+test "Service Provider - Should deinit inner resolve dependency on both fail build" {
+    const allocator = std.testing.allocator;
+
+    var container = Container.init(allocator);
+    defer container.deinit();
+
+    const service = @import("assets/resolving_error_leak_in_inner_resolve.zig");
+
+    try container.registerTransient(service.A);
+    try container.registerTransient(service.B);
+    try container.registerTransient(service.C);
+    try container.registerTransient(service.D);
+    try container.registerTransient(service.E);
+
+    var sp = try container.createServiceProvider();
+    defer sp.deinit();
+
+    const a = sp.resolve(service.A);
+    try std.testing.expectError(service.err.some_error, a);
+
+    // leaked
+    try std.testing.expect(sp.transient_services.items.items.len == 0);
+}
