@@ -160,8 +160,8 @@ pub const ServiceProvider = struct {
         const resolved = try self.resolve_strategy(ctx, T);
 
         // Append the fully resolved context to the list of resolve roots.
-        if (ctx.active_root.?.info.?.life_cycle == .transient)
-            try self.transient_services.add(ctx.active_root.?);
+        if (ctx.active_root.info.?.life_cycle == .transient)
+            try self.transient_services.add(ctx.active_root);
 
         return resolved;
     }
@@ -261,25 +261,16 @@ pub const ServiceProvider = struct {
         // Retrieve the dependency interface information from the container.
         var di_interface = self.container.getDependencyInfo(T) orelse return ServiceProviderError.ServiceNotFound;
 
-        // Ensure that the resolution context is properly cleaned up in case of failure.
-        errdefer {
-            if (ctx.active_root != null) {
-                ctx.active_root.?.deinit(self);
-
-                ctx.active_root = null;
-            }
-            ctx.current_resolve = null;
-        }
-
         // Cast the dependency interface to the specific DependencyInfo type.
         const dep_info: *DependencyInfo(*T) = @ptrCast(@alignCast(di_interface.ptr));
 
         const current = ctx.current_resolve;
+
         var new_current: *Resolved = undefined;
 
         // Handle hierarchical resolution contexts by either initializing the root or appending to the current context.
         if (current == null) {
-            new_current = &ctx.active_root.?;
+            new_current = &ctx.active_root;
         } else {
             try current.?.child.append(Resolved.empty(self.allocator));
             new_current = &current.?.child.items[current.?.child.items.len - 1];
@@ -289,7 +280,9 @@ pub const ServiceProvider = struct {
         ctx.current_resolve = new_current;
         new_current.info = di_interface;
 
-        try ctx.active_root.?.checkCycles(null);
+        errdefer new_current.deinit(self);
+
+        try ctx.active_root.checkCycles(null);
 
         // Instantiate the dependency based on its lifecycle configuration.
         switch (dep_info.life_cycle) {
@@ -309,12 +302,12 @@ pub const ServiceProvider = struct {
                     const value = try self.build(ctx, T, dep_info);
 
                     ptr = try self.allocator.create(T);
+                    errdefer self.allocator.destroy(ptr.?);
 
                     ptr.?.* = value;
 
                     new_current.ptr = ptr;
                     try self.singleton.add(new_current.*);
-                    errdefer self.allocator.destroy(ptr.?);
                 } else {
                     new_current.ptr = ptr;
                 }
@@ -332,13 +325,13 @@ pub const ServiceProvider = struct {
                     const value = try self.build(ctx, T, dep_info);
 
                     ptr = try self.allocator.create(T);
+                    errdefer self.allocator.destroy(ptr.?);
 
                     ptr.?.* = value;
 
                     new_current.ptr = ptr;
 
                     try self.scope.?.resolved_services.add(new_current.*);
-                    errdefer self.allocator.destroy(ptr.?);
                 } else {
                     new_current.ptr = ptr;
                 }
@@ -349,7 +342,7 @@ pub const ServiceProvider = struct {
         if (current != null) {
             ctx.current_resolve = current;
         } else {
-            ctx.current_resolve = &ctx.active_root.?;
+            ctx.current_resolve = &ctx.active_root;
         }
 
         new_current.info.?.verify();
@@ -501,18 +494,21 @@ const Resolved = struct {
     /// Deinitializes the Resolved instance, recursively cleaning up all nested dependencies.
     pub fn deinit(self: *Self, sp: *ServiceProvider) void {
         // Recursively deinitialize all child dependencies to ensure proper cleanup.
+        if (self.info == null) return;
 
         for (self.child.items) |*child| {
             child.inner_deinit(sp);
         }
 
         // Deinitialize the dependency instance if it exists.
-        if (self.info != null and
-            self.ptr != null)
-        {
+        if (self.ptr != null) {
             self.info.?.callDeinit(self.ptr.?, sp);
             self.info.?.destroyDependency(self.ptr.?, self.allocator);
+
+            self.ptr = null;
         }
+
+        self.info = null;
 
         // Deinitialize the list holding child dependencies.
         self.child.deinit();
@@ -521,6 +517,8 @@ const Resolved = struct {
     /// Recursively deinitializes only transient dependencies within this Resolved context.
     fn inner_deinit(self: *Self, sp: *ServiceProvider) void {
         // Skip deinitialization for non-transient dependencies to preserve their lifecycle.
+        if (self.info == null) return;
+
         if (self.info != null and
             self.info.?.life_cycle != .transient)
         {
@@ -538,7 +536,11 @@ const Resolved = struct {
         {
             self.info.?.callDeinit(self.ptr.?, sp);
             self.info.?.destroyDependency(self.ptr.?, self.allocator);
+
+            self.ptr = null;
         }
+
+        self.info = null;
 
         // Deinitialize the list holding child dependencies.
         self.child.deinit();
@@ -551,7 +553,7 @@ const BuilderContext = struct {
     const Self = @This();
 
     sp: *ServiceProvider, // Reference to the ServiceProvider responsible for resolving dependencies.
-    active_root: ?Resolved, // Root of the current resolution context, tracking the top-level dependency.
+    active_root: Resolved, // Root of the current resolution context, tracking the top-level dependency.
     current_resolve: ?*Resolved, // Pointer to the currently active Resolved context during the resolution process.
 
     /// Initializes a new BuilderContext instance.
