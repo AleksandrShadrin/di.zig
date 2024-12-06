@@ -20,25 +20,34 @@ const Mediatr = struct {
         };
     }
 
-    pub fn addHandler(container: *di.Container, HandlerType: type, Request: type) !void {
+    pub fn addHandler(container: *di.Container, HandlerType: type, R: type) !void {
         try container.registerScoped(HandlerType);
 
+        comptime var return_type = @typeInfo(@TypeOf(HandlerType.handle)).Fn.return_type.?;
+
+        if (@typeInfo(return_type) == .ErrorUnion)
+            return_type = @typeInfo(return_type).ErrorUnion.payload;
+
         const create_handler = struct {
-            pub fn create_handler(sp: *di.ServiceProvider) !Handler(Request) {
+            pub fn create_handler(sp: *di.ServiceProvider) !Handler(R, return_type) {
                 const h = try sp.resolve(HandlerType);
-                return Handler(Request){
+                return Handler(R, return_type){
                     .ctx = h,
                     .handle_fn = call_handler,
                     .deinit_fn = deinit_handler,
                 };
             }
 
-            pub fn call_handler(ctx: *anyopaque, request: Request) !void {
+            pub fn call_handler(ctx: *anyopaque, request: R) !return_type {
                 const h: *HandlerType = @ptrCast(@alignCast(ctx));
-                try h.handle(request);
+                if (@typeInfo(return_type) == .ErrorUnion) {
+                    return try h.handle(request);
+                } else {
+                    return h.handle(request);
+                }
             }
 
-            pub fn deinit_handler(handler: *Handler(Request), sp: *di.ServiceProvider) !void {
+            pub fn deinit_handler(handler: *Handler(R, return_type), sp: *di.ServiceProvider) !void {
                 const h: *HandlerType = @ptrCast(@alignCast(handler.ctx));
                 try sp.unresolve(h);
             }
@@ -47,41 +56,30 @@ const Mediatr = struct {
         try container.registerScopedWithFactory(create_handler);
     }
 
-    pub fn send(self: Self, request: anytype) !void {
-        const handler = try self.sp.resolve(Handler(@TypeOf(request)));
-        try handler.handle(request);
-        self.sp.unresolve(handler) catch {};
+    pub fn send(self: Self, request: anytype, output: type) !output {
+        const handler = try self.sp.resolve(Handler(@TypeOf(request), output));
+        return try handler.handle(request);
     }
 };
 
-pub fn Handler(Request: type) type {
+pub fn Handler(TIn: type, TOut: type) type {
     return struct {
         const Self = @This();
 
         ctx: *anyopaque,
 
-        handle_fn: *const fn (*anyopaque, Request) anyerror!void,
+        handle_fn: *const fn (*anyopaque, TIn) anyerror!TOut,
         deinit_fn: *const fn (*Self, *di.ServiceProvider) anyerror!void,
 
         pub fn deinit(self: *Self, sp: *di.ServiceProvider) void {
             self.deinit_fn(self, sp) catch {};
         }
 
-        pub fn handle(self: Self, request: Request) !void {
-            try self.handle_fn(self.ctx, request);
+        pub fn handle(self: Self, request: TIn) !TOut {
+            return try self.handle_fn(self.ctx, request);
         }
     };
 }
-
-const Payload = struct {
-    data: ?[]const u8,
-
-    pub fn init() Payload {
-        return Payload{
-            .data = null,
-        };
-    }
-};
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{ .verbose_log = true }){};
@@ -94,9 +92,12 @@ pub fn main() !void {
     // Create controllers for different model types
     const GreetHandler = struct {
         const Self = @This();
+
         const Request = struct {
             name: []const u8,
         };
+
+        const Output = void;
 
         writer: *Writer,
 
@@ -106,7 +107,7 @@ pub fn main() !void {
             };
         }
 
-        pub fn handle(self: *Self, request: Request) !void {
+        pub fn handle(self: *Self, request: Request) !Output {
             try self.writer.writeAll(
                 \\<!DOCTYPE html>
                 \\<html>
@@ -115,7 +116,7 @@ pub fn main() !void {
             try self.writer.writeAll(
                 \\</title></head>
                 \\<body>
-                \\<h1>Greetings 
+                \\<h1>Greetings
             );
             try self.writer.writeAll(request.name);
 
@@ -155,7 +156,8 @@ pub fn main() !void {
 
     var mediatr = try scope.resolve(Mediatr);
 
-    try mediatr.send(GreetHandler.Request{
-        .name = "Aleksandr",
-    });
+    try mediatr.send(
+        GreetHandler.Request{ .name = "Aleksandr" },
+        GreetHandler.Output,
+    );
 }
