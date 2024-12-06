@@ -20,25 +20,32 @@ const Mediatr = struct {
         };
     }
 
-    pub fn addHandler(container: *di.Container, HandlerType: type, R: type) !void {
-        try container.registerScoped(HandlerType);
-
-        comptime var return_type = @typeInfo(@TypeOf(HandlerType.handle)).Fn.return_type.?;
+    pub fn addHandler(container: *di.Container, HandlerType: type) !void {
+        const handler_fn = @typeInfo(@TypeOf(HandlerType.handle)).Fn;
+        comptime var return_type = handler_fn.return_type.?;
 
         if (@typeInfo(return_type) == .ErrorUnion)
             return_type = @typeInfo(return_type).ErrorUnion.payload;
 
+        if (handler_fn.params.len != 2 or
+            handler_fn.params[0].type.? != *HandlerType)
+            @compileError(@typeName(HandlerType) ++ " should have handle with signature fn (*Self, ReqeustType)");
+
+        const Request = handler_fn.params[1].type.?;
+
+        try container.registerScoped(HandlerType);
+
         const create_handler = struct {
-            pub fn create_handler(sp: *di.ServiceProvider) !Handler(R, return_type) {
+            pub fn create_handler(sp: *di.ServiceProvider) !Handler(Request, return_type) {
                 const h = try sp.resolve(HandlerType);
-                return Handler(R, return_type){
+                return Handler(Request, return_type){
                     .ctx = h,
                     .handle_fn = call_handler,
                     .deinit_fn = deinit_handler,
                 };
             }
 
-            pub fn call_handler(ctx: *anyopaque, request: R) !return_type {
+            pub fn call_handler(ctx: *anyopaque, request: Request) !return_type {
                 const h: *HandlerType = @ptrCast(@alignCast(ctx));
                 if (@typeInfo(return_type) == .ErrorUnion) {
                     return try h.handle(request);
@@ -47,7 +54,7 @@ const Mediatr = struct {
                 }
             }
 
-            pub fn deinit_handler(handler: *Handler(R, return_type), sp: *di.ServiceProvider) !void {
+            pub fn deinit_handler(handler: *Handler(Request, return_type), sp: *di.ServiceProvider) !void {
                 const h: *HandlerType = @ptrCast(@alignCast(handler.ctx));
                 try sp.unresolve(h);
             }
@@ -146,7 +153,7 @@ pub fn main() !void {
     try container.registerSingletonWithFactory(get_writer);
     try container.registerScoped(Mediatr);
 
-    try Mediatr.addHandler(&container, GreetHandler, GreetHandler.Request);
+    try Mediatr.addHandler(&container, GreetHandler);
 
     var sp = try container.createServiceProvider();
     defer sp.deinit();
