@@ -12,8 +12,6 @@ inline fn getArgs(f: anytype) []const type {
     return &fn_args;
 }
 
-const InjectorError = error{CantCall};
-
 pub fn MakeInjectable(f: anytype) type {
     const ti = @typeInfo(@TypeOf(f)).Fn;
     comptime var return_type = @typeInfo(@TypeOf(f)).Fn.return_type.?;
@@ -116,7 +114,7 @@ pub fn main() !void {
     comptime var injector = MakeInjectable(SomeStruct.haveDependencies);
     var someStruct = SomeStruct{};
 
-    _ = try injector.callWithSelf(&someStruct, &sp);
+    try injector.callWithSelf(&someStruct, &sp);
 
     injector = MakeInjectable(haveDependencies);
     try injector.call(&sp);
