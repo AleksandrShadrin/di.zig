@@ -51,6 +51,8 @@ const Logger = struct {
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{ .verbose_log = true }){};
+    defer std.debug.print("{any}\n", .{gpa.deinit()});
+
     const allocator = gpa.allocator();
 
     var container = di.Container.init(allocator);

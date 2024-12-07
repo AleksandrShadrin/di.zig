@@ -10,6 +10,7 @@ A simple and lightweight dependency injection (DI) container for Zig. Manage you
 * Scoped Services: Manage lifetimes within scopes.
 * Generics Support: Work with generic types smoothly.
 * Error Handling: Gracefully handle errors when creating/allocating services
+* Object management: The service provider is responsible for deallocating objects. Add your custom `deinit` function, which will be automatically called when the object is deinitialized.
 
 # 🛠️ Installation
 
@@ -170,6 +171,12 @@ pub fn main() !void {
 ```
 
 This example sets up a simple DI container, registers a Logger as a singleton and Database as a transient service, then resolves and uses them.
+
+More examples can be founded in examples folder, use:
+
+```sh
+zig build run-${filename}
+```
 
 ## 📄 License
 
