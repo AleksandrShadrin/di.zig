@@ -16,6 +16,7 @@ pub fn build(b: *std.Build) !void {
         .{ .name = "mediatr", .src = "examples/mediatr.zig" },
         .{ .name = "deinit", .src = "examples/deinit.zig" },
         .{ .name = "simple", .src = "examples/simple.zig" },
+        .{ .name = "injector", .src = "examples/injector.zig" },
     }) |excfg| {
         const ex_name = excfg.name;
         const ex_src = excfg.src;

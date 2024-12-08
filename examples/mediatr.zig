@@ -90,7 +90,8 @@ pub fn Handler(TIn: type, TOut: type) type {
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{ .verbose_log = true }){};
-    defer _ = gpa.deinit();
+    defer std.debug.print("{any}\n", .{gpa.deinit()});
+
     const allocator = gpa.allocator();
 
     var container = di.Container.init(allocator);
