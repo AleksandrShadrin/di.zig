@@ -21,14 +21,22 @@ pub fn MakeInjectable(f: anytype) type {
                     @compileError(@typeName(arg_type) ++ " should be pointer");
 
                 call_tuple[i] = try sp.resolve(@typeInfo(arg_type).Pointer.child);
-                errdefer sp.unresolve(call_tuple[i]);
             }
 
-            if (@typeInfo(return_type) == .ErrorUnion) {
-                return try @call(.auto, f, call_tuple);
-            } else {
-                return @call(.auto, f, call_tuple);
+            const res = if (@typeInfo(return_type) == .ErrorUnion)
+                try @call(.auto, f, call_tuple)
+            else
+                @call(.auto, f, call_tuple);
+
+            inline for (call_tuple) |arg| {
+                const arg_type = @TypeOf(arg);
+
+                sp.unresolve(arg) catch |err| {
+                    std.log.err("Can't unresolve {s} {any}\n", .{ @typeName(arg_type), err });
+                };
             }
+
+            return res;
         }
 
         fn callWithSelf(self: Self.?, sp: *di.ServiceProvider) !return_type {
@@ -42,14 +50,22 @@ pub fn MakeInjectable(f: anytype) type {
                     @compileError(@typeName(arg_type) ++ " should be pointer");
 
                 call_tuple[i] = try sp.resolve(@typeInfo(arg_type).Pointer.child);
-                errdefer sp.unresolve(call_tuple[i]);
             }
 
-            if (@typeInfo(return_type) == .ErrorUnion) {
-                return try @call(.auto, f, call_tuple);
-            } else {
-                return @call(.auto, f, call_tuple);
+            const res = if (@typeInfo(return_type) == .ErrorUnion)
+                try @call(.auto, f, call_tuple)
+            else
+                @call(.auto, f, call_tuple);
+
+            inline for (1..call_tuple.len) |i| {
+                const arg_type = @TypeOf(call_tuple[i]);
+
+                sp.unresolve(call_tuple[i]) catch |err| {
+                    std.log.err("Can't unresolve {s} {any}\n", .{ @typeName(arg_type), err });
+                };
             }
+
+            return res;
         }
     };
 }
@@ -71,7 +87,7 @@ const Logger = struct {
 };
 
 const SomeStruct = struct {
-    pub fn haveDependencies(self: *SomeStruct, logger: *Logger, database: *Database) !void {
+    pub fn haveDependencies(self: *SomeStruct, logger: *Logger, database: *Database) void {
         _ = self;
         _ = logger;
         _ = database;
