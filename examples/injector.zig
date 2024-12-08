@@ -1,17 +1,6 @@
 const std = @import("std");
 const di = @import("di");
 
-inline fn getArgs(f: anytype) []const type {
-    const ti = @typeInfo(@TypeOf(f)).Fn;
-    comptime var fn_args: [ti.params.len]type = undefined;
-
-    inline for (ti.params, 0..) |p, i| {
-        fn_args[i] = p.type.?;
-    }
-
-    return &fn_args;
-}
-
 pub fn MakeInjectable(f: anytype) type {
     const ti = @typeInfo(@TypeOf(f)).Fn;
     comptime var return_type = @typeInfo(@TypeOf(f)).Fn.return_type.?;
@@ -23,15 +12,15 @@ pub fn MakeInjectable(f: anytype) type {
 
     return struct {
         fn call(sp: *di.ServiceProvider) !return_type {
-            const args = getArgs(f);
+            var call_tuple: std.meta.ArgsTuple(@TypeOf(f)) = undefined;
 
-            var call_tuple: std.meta.Tuple(args) = undefined;
+            inline for (call_tuple, 0..) |arg, i| {
+                const arg_type = @TypeOf(arg);
 
-            inline for (args, 0..) |arg, i| {
-                if (@typeInfo(arg) != .Pointer)
-                    @compileError(@typeName(arg) ++ " should be pointer");
+                if (@typeInfo(arg_type) != .Pointer)
+                    @compileError(@typeName(arg_type) ++ " should be pointer");
 
-                call_tuple[i] = try sp.resolve(@typeInfo(arg).Pointer.child);
+                call_tuple[i] = try sp.resolve(@typeInfo(arg_type).Pointer.child);
                 errdefer sp.unresolve(call_tuple[i]);
             }
 
@@ -43,16 +32,16 @@ pub fn MakeInjectable(f: anytype) type {
         }
 
         fn callWithSelf(self: Self.?, sp: *di.ServiceProvider) !return_type {
-            const args = getArgs(f);
-
-            var call_tuple: std.meta.Tuple(args) = undefined;
+            var call_tuple: std.meta.ArgsTuple(@TypeOf(f)) = undefined;
             call_tuple[0] = self;
 
-            inline for (args[1..], 1..) |arg, i| {
-                if (@typeInfo(arg) != .Pointer)
-                    @compileError(@typeName(arg) ++ " should be pointer");
+            inline for (1..call_tuple.len) |i| {
+                const arg_type = @TypeOf(call_tuple[i]);
 
-                call_tuple[i] = try sp.resolve(@typeInfo(arg).Pointer.child);
+                if (@typeInfo(arg_type) != .Pointer)
+                    @compileError(@typeName(arg_type) ++ " should be pointer");
+
+                call_tuple[i] = try sp.resolve(@typeInfo(arg_type).Pointer.child);
                 errdefer sp.unresolve(call_tuple[i]);
             }
 
