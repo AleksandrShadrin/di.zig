@@ -499,6 +499,7 @@ const Resolved = struct {
     /// Recursively deinitializes only transient dependencies within this Resolved context.
     pub fn partiallyDeinit(self: *Self, sp: *ServiceProvider) void {
         // Recursively deinitialize all child dependencies to ensure proper cleanup.
+        defer self.child.clearRetainingCapacity();
         if (self.info == null) return;
 
         // Deinitialize the dependency instance if it exists.
@@ -510,7 +511,6 @@ const Resolved = struct {
         }
 
         self.info = null;
-        self.child.clearRetainingCapacity();
     }
 
     fn hasLifeCycle(self: *Self, life_cycle: dependency.LifeCycle) bool {

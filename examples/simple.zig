@@ -70,6 +70,4 @@ pub fn main() !void {
 
     const db = try sp.resolve(Database);
     try sp.unresolve(db);
-
-    _ = try sp.resolve(di.Generic(A, .{u8}));
 }
