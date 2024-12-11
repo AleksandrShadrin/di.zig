@@ -33,7 +33,7 @@ const Mediatr = struct {
 
         const Request = handler_fn.params[1].type.?;
 
-        try container.registerScoped(HandlerType);
+        try container.registerTransient(HandlerType);
 
         const create_handler = struct {
             pub fn create_handler(sp: *di.ServiceProvider) !Handler(Request, return_type) {
@@ -60,11 +60,12 @@ const Mediatr = struct {
             }
         }.create_handler;
 
-        try container.registerScopedWithFactory(create_handler);
+        try container.registerTransientWithFactory(create_handler);
     }
 
     pub fn send(self: Self, request: anytype, output: type) !output {
         const handler = try self.sp.resolve(Handler(@TypeOf(request), output));
+        defer self.sp.unresolve(handler) catch {};
         return try handler.handle(request);
     }
 };
@@ -89,7 +90,7 @@ pub fn Handler(TIn: type, TOut: type) type {
 }
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{ .verbose_log = true }){};
+    var gpa = std.heap.GeneralPurposeAllocator(.{ .verbose_log = true, .retain_metadata = true }){};
     defer std.debug.print("{any}\n", .{gpa.deinit()});
 
     const allocator = gpa.allocator();

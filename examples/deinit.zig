@@ -67,6 +67,10 @@ pub fn main() !void {
         sp.deinit();
     }
 
-    const db = try sp.resolve(Database);
-    try sp.unresolve(db);
+    for (0..10) |i| {
+        _ = i;
+
+        const db = try sp.resolve(Database);
+        try sp.unresolve(db);
+    }
 }

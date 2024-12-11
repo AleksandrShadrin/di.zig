@@ -39,6 +39,15 @@ const Logger = struct {
     }
 };
 
+pub fn A(comptime T: type) type {
+    return struct {
+        pub fn init() @This() {
+            _ = T;
+            return @This(){};
+        }
+    };
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{ .verbose_log = true }){};
     defer std.debug.print("{any}\n", .{gpa.deinit()});
@@ -50,6 +59,7 @@ pub fn main() !void {
 
     try container.registerTransient(Database);
     try container.registerTransient(Logger);
+    try container.registerTransient(A);
 
     var sp = try container.createServiceProvider();
 
@@ -60,4 +70,6 @@ pub fn main() !void {
 
     const db = try sp.resolve(Database);
     try sp.unresolve(db);
+
+    _ = try sp.resolve(di.Generic(A, .{u8}));
 }
