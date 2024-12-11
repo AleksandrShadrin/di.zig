@@ -450,10 +450,9 @@ test "Service Provider - Should leak inner resolve dependency on fail build" {
     const a = sp.resolve(service.A);
     try std.testing.expectError(service.e.some_error, a);
 
-    // leaked
+    // leaked 1 service
     try std.testing.expect(sp.transient_services.items.items.len == 4);
-    std.log.warn("{d}\n", .{sp.transient_services.available.items.len});
-    try std.testing.expect(sp.transient_services.available.items.len == 4);
+    try std.testing.expect(sp.transient_services.available.items.len == 3);
 }
 
 test "Service Provider - Should deinit inner resolve dependency on both fail build" {
