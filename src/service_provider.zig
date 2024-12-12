@@ -251,65 +251,50 @@ pub const ServiceProvider = struct {
     /// - An error if the building process fails.
     fn buildSimpleType(self: *Self, ctx: *BuilderContext, T: type) !*T {
         // Retrieve the dependency interface information from the container.
-        var di_interface = self.container.getDependencyInfo(T) orelse return ServiceProviderError.ServiceNotFound;
+        var info = self.container.getDependencyInfo(T) orelse return ServiceProviderError.ServiceNotFound;
 
-        var node = std.DoublyLinkedList(*IDependencyInfo).Node{ .data = di_interface };
+        var node = std.DoublyLinkedList(*IDependencyInfo).Node{ .data = info };
         ctx.append(&node);
-
-        // Cast the dependency interface to the specific DependencyInfo type.
-        const dep_info: *DependencyInfo(*T) = @ptrCast(@alignCast(di_interface.ptr));
-
-        const active_root_resolve = ctx.active_root == null;
-
-        var new_root: Resolved = Resolved.empty(self.allocator);
-        new_root.info = di_interface;
-
-        var current_root: ?*Resolved = null;
-
-        if (ctx.active_root == null) {
-            ctx.active_root = &new_root;
-        } else {
-            current_root = ctx.current_resolve.?;
+        defer {
+            ctx.pop();
+            node.data.verify();
         }
 
+        var new_root = Resolved.empty(self.allocator);
+        new_root.info = info;
+
+        const current_root = ctx.current_resolve;
         ctx.current_resolve = &new_root;
 
         try ctx.verify();
 
-        var ptr_to_storage: ?*Resolved = null;
-        errdefer {
-            switch (dep_info.life_cycle) {
-                .singleton, .scoped => {
-                    new_root.deinit(self);
-                },
-                .transient => {
-                    if (ptr_to_storage != null) self.transient_services.tryPassToAvailable(ptr_to_storage.?, self);
-                },
-            }
-        }
+        var storage: ?*Resolved = null;
+        errdefer switch (info.life_cycle) {
+            .singleton, .scoped => new_root.deinit(self),
+            .transient => if (storage != null) self.transient_services.tryPassToAvailable(storage.?, self),
+        };
 
         // Instantiate the dependency based on its lifecycle configuration.
-        switch (dep_info.life_cycle) {
+        switch (info.life_cycle) {
             .transient => {
-                // Transient services always create a new instance upon resolution.
-                ptr_to_storage = try self.transient_services.findPartiallyDeinitOrCreate();
-                ptr_to_storage.?.info = di_interface;
+                storage = try self.transient_services.findPartiallyDeinitOrCreate();
+                storage.?.info = info;
 
-                ctx.current_resolve = ptr_to_storage;
-                if (active_root_resolve) ctx.active_root = ptr_to_storage;
+                ctx.current_resolve = storage;
+                const dep_info: *DependencyInfo(*T) = @ptrCast(@alignCast(info.ptr));
 
                 const value = try self.build(ctx, T, dep_info);
 
                 const ptr = try self.allocator.create(T);
 
                 ptr.* = value;
-                ptr_to_storage.?.ptr = ptr;
+                storage.?.ptr = ptr;
             },
             .singleton => {
-                const singleton_service = self.singleton.get(di_interface.getName());
-
-                // If no existing singleton, create and store it.
-                if (singleton_service == null) {
+                if (self.singleton.get(info.getName())) |singleton| {
+                    storage = singleton;
+                } else {
+                    const dep_info: *DependencyInfo(*T) = @ptrCast(@alignCast(info.ptr));
                     const value = try self.build(ctx, T, dep_info);
 
                     const ptr: *T = try self.allocator.create(T);
@@ -318,21 +303,17 @@ pub const ServiceProvider = struct {
                     ptr.* = value;
                     new_root.ptr = ptr;
 
-                    ptr_to_storage = try self.singleton.add(new_root);
-                } else {
-                    ptr_to_storage = singleton_service.?;
+                    storage = try self.singleton.add(new_root);
                 }
             },
             .scoped => {
-                // Scoped services require an active scope to be resolved within.
-                if (self.scope == null) {
+                if (self.scope == null)
                     return ServiceProviderError.NoActiveScope;
-                }
 
-                const scoped_service = self.scope.?.resolved_services.get(di_interface.getName());
-
-                // If no existing scoped instance, create and store it within the current scope.
-                if (scoped_service == null) {
+                if (self.scope.?.resolved_services.get(info.getName())) |scoped| {
+                    storage = scoped;
+                } else {
+                    const dep_info: *DependencyInfo(*T) = @ptrCast(@alignCast(info.ptr));
                     const value = try self.build(ctx, T, dep_info);
 
                     const ptr: *T = try self.allocator.create(T);
@@ -341,23 +322,18 @@ pub const ServiceProvider = struct {
                     ptr.* = value;
                     new_root.ptr = ptr;
 
-                    ptr_to_storage = try self.scope.?.resolved_services.add(new_root);
-                } else {
-                    ptr_to_storage = scoped_service.?;
+                    storage = try self.scope.?.resolved_services.add(new_root);
                 }
             },
         }
 
-        ctx.pop();
-        node.data.verify();
-
         // Restore the previous resolution context after completing the current dependency resolution.
         ctx.current_resolve = current_root;
 
-        if (current_root != null) try current_root.?.child.append(ptr_to_storage.?);
+        if (current_root != null) try current_root.?.child.append(storage.?);
 
         // Return the pointer to the newly resolved dependency.
-        return @ptrCast(@alignCast(ptr_to_storage.?.ptr));
+        return @ptrCast(@alignCast(storage.?.ptr));
     }
 
     /// Constructs an instance of type `T` using the provided BuilderContext.
