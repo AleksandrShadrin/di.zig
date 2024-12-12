@@ -127,7 +127,10 @@ pub const ServiceProvider = struct {
         var ctx = BuilderContext.init(self);
 
         // Perform the actual resolution using the internal resolve method.
-        return try self.inner_resolve(&ctx, T);
+        const result = try self.inner_resolve(&ctx, T);
+        ctx.root.?.is_root = true;
+
+        return result;
     }
 
     /// Internal method responsible for the actual resolution of a dependency.
@@ -263,8 +266,8 @@ pub const ServiceProvider = struct {
         var new_root = Resolved.empty(self.allocator);
         new_root.info = info;
 
-        const current_root = ctx.current_resolve;
-        ctx.current_resolve = &new_root;
+        const current_root = ctx.root;
+        ctx.root = &new_root;
 
         try ctx.verify();
 
@@ -280,7 +283,7 @@ pub const ServiceProvider = struct {
                 storage = try self.transient_services.findPartiallyDeinitOrCreate();
                 storage.?.info = info;
 
-                ctx.current_resolve = storage;
+                ctx.root = storage;
                 const dep_info: *DependencyInfo(*T) = @ptrCast(@alignCast(info.ptr));
 
                 const value = try self.build(ctx, T, dep_info);
@@ -327,10 +330,10 @@ pub const ServiceProvider = struct {
             },
         }
 
-        // Restore the previous resolution context after completing the current dependency resolution.
-        ctx.current_resolve = current_root;
-
-        if (current_root != null) try current_root.?.child.append(storage.?);
+        if (current_root != null) {
+            ctx.root = current_root;
+            try current_root.?.child.append(storage.?);
+        }
 
         // Return the pointer to the newly resolved dependency.
         return @ptrCast(@alignCast(storage.?.ptr));
@@ -434,12 +437,13 @@ const Resolved = struct {
     const Self = @This();
 
     ptr: ?*anyopaque = null, // Pointer to the instantiated dependency instance.
-
     info: ?*IDependencyInfo = null, // Interface information for the dependency, including lifecycle and deinit function.
 
     child: std.ArrayList(*Resolved), // List of nested dependencies resolved by this dependency.
 
     allocator: std.mem.Allocator, // Allocator used for managing memory within this Resolved context.
+
+    is_root: bool = false,
 
     /// Constructs an empty Resolved instance with an initialized child list.
     ///
@@ -476,6 +480,8 @@ const Resolved = struct {
     pub fn partiallyDeinit(self: *Self, sp: *ServiceProvider) void {
         // Recursively deinitialize all child dependencies to ensure proper cleanup.
         defer self.child.clearRetainingCapacity();
+
+        self.is_root = false;
         if (self.info == null) return;
 
         // Deinitialize the dependency instance if it exists.
@@ -538,8 +544,7 @@ const BuilderContext = struct {
     const Self = @This();
 
     sp: *ServiceProvider, // Reference to the ServiceProvider responsible for resolving dependencies.
-    active_root: ?*Resolved, // Root of the current resolution context, tracking the top-level dependency.
-    current_resolve: ?*Resolved, // Pointer to the currently active Resolved context during the resolution process.
+    root: ?*Resolved, // Pointer to the currently active Resolved context during the resolution process.
 
     info_chain: std.DoublyLinkedList(*IDependencyInfo),
 
@@ -555,8 +560,7 @@ const BuilderContext = struct {
     pub fn init(sp: *ServiceProvider) Self {
         return Self{
             .sp = sp,
-            .active_root = null,
-            .current_resolve = null,
+            .root = null,
             .info_chain = std.DoublyLinkedList(*IDependencyInfo){},
         };
     }
@@ -737,9 +741,13 @@ const TransientResolvedServices = struct {
 
         for (self.items.items, 0..) |resolved, i| {
             if (resolved.ptr != null and
+                resolved.is_root and
                 resolved.ptr.? == ptr and
                 resolved.info.? == info)
+            {
                 found_idx = i;
+                break;
+            }
         }
 
         if (found_idx == null)
