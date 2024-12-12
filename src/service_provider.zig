@@ -813,7 +813,8 @@ const TransientResolvedServices = struct {
     }
 
     pub fn makeAvailable(self: *Self, resolved: *Resolved, sp: *ServiceProvider, idx: ?usize) void {
-        var iter = Resolved.TransientIterator.init(self.allocator, resolved) catch {
+        var swa = std.heap.stackFallback(1024, self.allocator);
+        var iter = Resolved.TransientIterator.init(swa.get(), resolved) catch {
             const found_idx = idx orelse self.getIdx(resolved) orelse return;
             _ = self.items.swapRemove(found_idx);
 
