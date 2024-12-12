@@ -764,12 +764,7 @@ const TransientResolvedServices = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        var ptr = self.available.popOrNull();
-        if (ptr == null) {
-            ptr = try self.addNewPtr();
-        }
-
-        return ptr.?;
+        return self.available.popOrNull() orelse try self.addNewPtr();
     }
 
     fn addNewPtr(self: *Self) !*Resolved {
