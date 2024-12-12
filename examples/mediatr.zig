@@ -65,7 +65,6 @@ const Mediatr = struct {
 
     pub fn send(self: Self, request: anytype, output: type) !output {
         const handler = try self.sp.resolve(Handler(@TypeOf(request), output));
-        defer self.sp.unresolve(handler) catch {};
         return try handler.handle(request);
     }
 };
