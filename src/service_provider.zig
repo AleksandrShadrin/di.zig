@@ -46,12 +46,12 @@ pub const ServiceProvider = struct {
     ///
     /// Returns:
     /// - A new instance of ServiceProvider.
-    pub fn init(a: std.mem.Allocator, c: *container.Container) !Self {
+    pub fn init(allocator: std.mem.Allocator, c: *container.Container) !Self {
         return .{
-            .allocator = a,
+            .allocator = allocator,
             .container = c,
-            .transient_services = TransientResolvedServices.init(a),
-            .singleton = try OnceResolvedServices.init(a),
+            .transient_services = TransientResolvedServices.init(allocator),
+            .singleton = try OnceResolvedServices.init(allocator),
         };
     }
 
@@ -89,14 +89,14 @@ pub const ServiceProvider = struct {
         const dereferenced_type = utilities.deref(@TypeOf(T));
 
         // Fetch the dependency information from the container.
-        const dep_interface = self.container.getDependencyInfo(dereferenced_type) orelse return ServiceProviderError.ServiceNotFound;
+        const info = self.container.getDependencyInfo(dereferenced_type) orelse return ServiceProviderError.ServiceNotFound;
 
         // Only dependencies with a transient lifecycle are eligible for unresolution.
-        if (dep_interface.life_cycle != .transient)
+        if (info.life_cycle != .transient)
             return ServiceProviderError.UnresolveLifeCycleShouldBeTransient;
 
         // Search through all root resolution contexts to locate the matching dependency instance.
-        if (!self.transient_services.delete(@as(*anyopaque, T), self)) return ServiceProviderError.NoResolveContextFound;
+        if (!self.transient_services.delete(@as(*anyopaque, T), info, self)) return ServiceProviderError.NoResolveContextFound;
     }
 
     /// Determines the error type based on the type `T` being resolved.
@@ -124,11 +124,7 @@ pub const ServiceProvider = struct {
     /// - An error if the resolution process fails.
     pub fn resolve(self: *Self, comptime T: type) !*T {
         // Initialize a new BuilderContext for this resolution operation.
-        var ctx = BuilderContext{
-            .sp = self,
-            .active_root = Resolved.empty(self.allocator),
-            .current_resolve = null,
-        };
+        var ctx = BuilderContext.init(self);
 
         // Perform the actual resolution using the internal resolve method.
         return try self.inner_resolve(&ctx, T);
@@ -158,10 +154,6 @@ pub const ServiceProvider = struct {
 
         // Execute the resolution strategy to obtain the dependency instance.
         const resolved = try self.resolve_strategy(ctx, T);
-
-        // Append the fully resolved context to the list of resolve roots.
-        if (ctx.active_root.info.?.life_cycle == .transient)
-            try self.transient_services.add(ctx.active_root);
 
         return resolved;
     }
@@ -259,95 +251,89 @@ pub const ServiceProvider = struct {
     /// - An error if the building process fails.
     fn buildSimpleType(self: *Self, ctx: *BuilderContext, T: type) !*T {
         // Retrieve the dependency interface information from the container.
-        var di_interface = self.container.getDependencyInfo(T) orelse return ServiceProviderError.ServiceNotFound;
+        var info = self.container.getDependencyInfo(T) orelse return ServiceProviderError.ServiceNotFound;
 
-        // Cast the dependency interface to the specific DependencyInfo type.
-        const dep_info: *DependencyInfo(*T) = @ptrCast(@alignCast(di_interface.ptr));
-
-        const current = ctx.current_resolve;
-
-        var new_current: *Resolved = undefined;
-
-        // Handle hierarchical resolution contexts by either initializing the root or appending to the current context.
-        if (current == null) {
-            new_current = &ctx.active_root;
-        } else {
-            try current.?.child.append(Resolved.empty(self.allocator));
-            new_current = &current.?.child.items[current.?.child.items.len - 1];
+        var node = std.DoublyLinkedList(*IDependencyInfo).Node{ .data = info };
+        ctx.append(&node);
+        defer {
+            ctx.pop();
+            node.data.verify();
         }
 
-        // Update the current resolution context to point to the new dependency being resolved.
-        ctx.current_resolve = new_current;
-        new_current.info = di_interface;
+        var new_root = Resolved.empty(self.allocator);
+        new_root.info = info;
 
-        errdefer new_current.deinit(self);
+        const current_root = ctx.current_resolve;
+        ctx.current_resolve = &new_root;
 
-        try ctx.active_root.checkCycles(null);
+        try ctx.verify();
+
+        var storage: ?*Resolved = null;
+        errdefer switch (info.life_cycle) {
+            .singleton, .scoped => new_root.deinit(self),
+            .transient => if (storage != null) self.transient_services.tryPassToAvailable(storage.?, self),
+        };
 
         // Instantiate the dependency based on its lifecycle configuration.
-        switch (dep_info.life_cycle) {
+        switch (info.life_cycle) {
             .transient => {
-                // Transient services always create a new instance upon resolution.
+                storage = try self.transient_services.findPartiallyDeinitOrCreate();
+                storage.?.info = info;
+
+                ctx.current_resolve = storage;
+                const dep_info: *DependencyInfo(*T) = @ptrCast(@alignCast(info.ptr));
+
                 const value = try self.build(ctx, T, dep_info);
+
                 const ptr = try self.allocator.create(T);
 
                 ptr.* = value;
-                new_current.ptr = ptr;
+                storage.?.ptr = ptr;
             },
             .singleton => {
-                var ptr: ?*T = @ptrCast(@alignCast(self.singleton.get(di_interface.getName())));
-
-                // If no existing singleton, create and store it.
-                if (ptr == null) {
+                if (self.singleton.get(info.getName())) |singleton| {
+                    storage = singleton;
+                } else {
+                    const dep_info: *DependencyInfo(*T) = @ptrCast(@alignCast(info.ptr));
                     const value = try self.build(ctx, T, dep_info);
 
-                    ptr = try self.allocator.create(T);
-                    errdefer self.allocator.destroy(ptr.?);
+                    const ptr: *T = try self.allocator.create(T);
+                    errdefer self.allocator.destroy(ptr);
 
-                    ptr.?.* = value;
+                    ptr.* = value;
+                    new_root.ptr = ptr;
 
-                    new_current.ptr = ptr;
-                    try self.singleton.add(new_current.*);
-                } else {
-                    new_current.ptr = ptr;
+                    storage = try self.singleton.add(new_root);
                 }
             },
             .scoped => {
-                // Scoped services require an active scope to be resolved within.
-                if (self.scope == null) {
+                if (self.scope == null)
                     return ServiceProviderError.NoActiveScope;
-                }
 
-                var ptr: ?*T = @ptrCast(@alignCast(self.scope.?.resolved_services.get(di_interface.getName())));
-
-                // If no existing scoped instance, create and store it within the current scope.
-                if (ptr == null) {
+                if (self.scope.?.resolved_services.get(info.getName())) |scoped| {
+                    storage = scoped;
+                } else {
+                    const dep_info: *DependencyInfo(*T) = @ptrCast(@alignCast(info.ptr));
                     const value = try self.build(ctx, T, dep_info);
 
-                    ptr = try self.allocator.create(T);
-                    errdefer self.allocator.destroy(ptr.?);
+                    const ptr: *T = try self.allocator.create(T);
+                    errdefer self.allocator.destroy(ptr);
 
-                    ptr.?.* = value;
+                    ptr.* = value;
+                    new_root.ptr = ptr;
 
-                    new_current.ptr = ptr;
-
-                    try self.scope.?.resolved_services.add(new_current.*);
-                } else {
-                    new_current.ptr = ptr;
+                    storage = try self.scope.?.resolved_services.add(new_root);
                 }
             },
         }
 
         // Restore the previous resolution context after completing the current dependency resolution.
-        if (current != null) {
-            ctx.current_resolve = current;
-        } else {
-            ctx.current_resolve = &ctx.active_root;
-        }
+        ctx.current_resolve = current_root;
 
-        new_current.info.?.verify();
+        if (current_root != null) try current_root.?.child.append(storage.?);
+
         // Return the pointer to the newly resolved dependency.
-        return @ptrCast(@alignCast(new_current.ptr));
+        return @ptrCast(@alignCast(storage.?.ptr));
     }
 
     /// Constructs an instance of type `T` using the provided BuilderContext.
@@ -435,9 +421,9 @@ pub const Scope = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.resolved_services.deinit(&self.sp);
-
         self.sp.deinit();
+
+        self.resolved_services.deinit(&self.sp);
         self.allocator.destroy(self.sp.scope.?);
     }
 };
@@ -451,7 +437,7 @@ const Resolved = struct {
 
     info: ?*IDependencyInfo = null, // Interface information for the dependency, including lifecycle and deinit function.
 
-    child: std.ArrayList(Resolved), // List of nested dependencies resolved by this dependency.
+    child: std.ArrayList(*Resolved), // List of nested dependencies resolved by this dependency.
 
     allocator: std.mem.Allocator, // Allocator used for managing memory within this Resolved context.
 
@@ -462,43 +448,18 @@ const Resolved = struct {
     ///
     /// Returns:
     /// - A new, empty Resolved instance.
-    pub fn empty(a: std.mem.Allocator) Self {
+    pub fn empty(allocator: std.mem.Allocator) Self {
         return Self{
-            .child = std.ArrayList(Resolved).init(a),
-            .allocator = a,
+            .child = std.ArrayList(*Resolved).init(allocator),
+            .allocator = allocator,
         };
-    }
-
-    pub fn checkCycles(self: *Self, ctx: ?*Self) !void {
-        if (self.info.?.isVerified())
-            return;
-
-        for (self.child.items) |*child| {
-            if (child.info == null)
-                continue;
-
-            try child.checkCycles(self);
-
-            if (ctx == null) {
-                continue;
-            }
-
-            try child.checkCycles(ctx);
-
-            if (std.mem.eql(u8, child.info.?.getName(), ctx.?.info.?.getName())) {
-                return ServiceProviderError.CycleDependency;
-            }
-        }
     }
 
     /// Deinitializes the Resolved instance, recursively cleaning up all nested dependencies.
     pub fn deinit(self: *Self, sp: *ServiceProvider) void {
+        defer self.child.clearAndFree();
         // Recursively deinitialize all child dependencies to ensure proper cleanup.
         if (self.info == null) return;
-
-        for (self.child.items) |*child| {
-            child.inner_deinit(sp);
-        }
 
         // Deinitialize the dependency instance if it exists.
         if (self.ptr != null) {
@@ -509,31 +470,16 @@ const Resolved = struct {
         }
 
         self.info = null;
-
-        // Deinitialize the list holding child dependencies.
-        self.child.deinit();
     }
 
     /// Recursively deinitializes only transient dependencies within this Resolved context.
-    fn inner_deinit(self: *Self, sp: *ServiceProvider) void {
-        // Skip deinitialization for non-transient dependencies to preserve their lifecycle.
+    pub fn partiallyDeinit(self: *Self, sp: *ServiceProvider) void {
+        // Recursively deinitialize all child dependencies to ensure proper cleanup.
+        defer self.child.clearRetainingCapacity();
         if (self.info == null) return;
 
-        if (self.info != null and
-            self.info.?.life_cycle != .transient)
-        {
-            return;
-        }
-
-        // Recursively deinitialize all child dependencies that are transient.
-        for (self.child.items) |*child| {
-            child.inner_deinit(sp);
-        }
-
-        // Deinitialize the transient dependency instance if it exists.
-        if (self.info != null and
-            self.ptr != null)
-        {
+        // Deinitialize the dependency instance if it exists.
+        if (self.ptr != null) {
             self.info.?.callDeinit(self.ptr.?, sp);
             self.info.?.destroyDependency(self.ptr.?, self.allocator);
 
@@ -541,10 +487,49 @@ const Resolved = struct {
         }
 
         self.info = null;
-
-        // Deinitialize the list holding child dependencies.
-        self.child.deinit();
     }
+
+    fn hasLifeCycle(self: *Self, life_cycle: dependency.LifeCycle) bool {
+        return self.info != null and self.info.?.life_cycle == life_cycle;
+    }
+
+    pub const TransientIterator = struct {
+        stack: std.ArrayList(*Resolved),
+        allocator: std.mem.Allocator,
+
+        pub fn init(allocator: std.mem.Allocator, root: *Resolved) !TransientIterator {
+            var stack = std.ArrayList(*Resolved).init(allocator);
+
+            if (root.hasLifeCycle(.transient))
+                try stack.append(root);
+
+            return .{
+                .stack = stack,
+                .allocator = allocator,
+            };
+        }
+
+        pub fn deinit(self: *TransientIterator) void {
+            self.stack.deinit();
+        }
+
+        pub fn next(self: *TransientIterator) ?*Resolved {
+            if (self.stack.items.len == 0) return null;
+
+            const current = self.stack.pop();
+
+            // Add children in reverse order so they're processed left-to-right
+            var i: usize = current.child.items.len;
+            while (i > 0) {
+                i -= 1;
+
+                if (current.child.items[i].hasLifeCycle(.transient))
+                    self.stack.append(current.child.items[i]) catch return null;
+            }
+
+            return current;
+        }
+    };
 };
 
 // Manages the context during dependency resolution, encapsulating the state required to resolve dependencies.
@@ -553,8 +538,10 @@ const BuilderContext = struct {
     const Self = @This();
 
     sp: *ServiceProvider, // Reference to the ServiceProvider responsible for resolving dependencies.
-    active_root: Resolved, // Root of the current resolution context, tracking the top-level dependency.
+    active_root: ?*Resolved, // Root of the current resolution context, tracking the top-level dependency.
     current_resolve: ?*Resolved, // Pointer to the currently active Resolved context during the resolution process.
+
+    info_chain: std.DoublyLinkedList(*IDependencyInfo),
 
     /// Initializes a new BuilderContext instance.
     ///
@@ -565,12 +552,39 @@ const BuilderContext = struct {
     ///
     /// Returns:
     /// - A newly initialized BuilderContext.
-    pub fn init(sp: *ServiceProvider, allocator: std.mem.Allocator) Self {
+    pub fn init(sp: *ServiceProvider) Self {
         return Self{
             .sp = sp,
-            .active_root = Resolved.empty(allocator),
+            .active_root = null,
             .current_resolve = null,
+            .info_chain = std.DoublyLinkedList(*IDependencyInfo){},
         };
+    }
+
+    pub fn append(self: *Self, node: *std.DoublyLinkedList(*IDependencyInfo).Node) void {
+        self.info_chain.append(node);
+    }
+
+    pub fn pop(self: *Self) void {
+        _ = self.info_chain.pop();
+    }
+
+    pub fn verify(self: *Self) !void {
+        var node = self.info_chain.first;
+
+        if (node == null or
+            node.?.data.isVerified())
+            return;
+
+        var visited = std.StringHashMap(bool).init(self.sp.allocator);
+        defer visited.deinit();
+
+        while (node != null) : (node = node.?.next) {
+            if (visited.contains(node.?.data.getName()))
+                return ServiceProviderError.CycleDependency;
+
+            try visited.put(node.?.data.getName(), true);
+        }
     }
 };
 
@@ -639,18 +653,18 @@ fn ServiceProviderBuilder(comptime T: type) type {
 const OnceResolvedServices = struct {
     const Self = @This();
 
-    items: *std.StringHashMap(Resolved),
+    items: *std.StringHashMap(*Resolved),
     allocator: std.mem.Allocator,
 
     mutex: Mutex,
 
-    pub fn init(a: std.mem.Allocator) !Self {
-        const items_ptr = try a.create(std.StringHashMap(Resolved));
-        items_ptr.* = std.StringHashMap(Resolved).init(a);
+    pub fn init(allocator: std.mem.Allocator) !Self {
+        const items_ptr = try allocator.create(std.StringHashMap(*Resolved));
+        items_ptr.* = std.StringHashMap(*Resolved).init(allocator);
 
         return Self{
             .items = items_ptr,
-            .allocator = a,
+            .allocator = allocator,
             .mutex = Mutex{},
         };
     }
@@ -658,70 +672,145 @@ const OnceResolvedServices = struct {
     pub fn deinit(self: *Self, sp: *ServiceProvider) void {
         var iter = self.items.valueIterator();
         while (iter.next()) |r| {
-            r.deinit(sp);
+            r.*.deinit(sp);
+
+            self.allocator.destroy(r.*);
         }
 
         self.items.deinit();
         self.allocator.destroy(self.items);
     }
 
-    pub fn get(self: *Self, name: []const u8) ?*anyopaque {
-        const result = self.items.get(name) orelse return null;
-        return result.ptr;
+    pub fn get(self: *Self, name: []const u8) ?*Resolved {
+        return self.items.get(name);
     }
 
-    pub fn add(self: *Self, resolved: Resolved) !void {
+    pub fn add(self: *Self, resolved: Resolved) !*Resolved {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        try self.items.put(resolved.info.?.getName(), resolved);
+        const ptr = try self.allocator.create(Resolved);
+        ptr.* = resolved;
+
+        errdefer self.allocator.destroy(ptr);
+
+        try self.items.put(resolved.info.?.getName(), ptr);
+        return ptr;
     }
 };
 
 const TransientResolvedServices = struct {
     const Self = @This();
 
-    items: std.ArrayList(Resolved),
+    items: std.ArrayList(*Resolved),
+    available: std.ArrayList(*Resolved),
+
     allocator: std.mem.Allocator,
 
     mutex: Mutex,
 
-    pub fn init(a: std.mem.Allocator) Self {
+    pub fn init(allocator: std.mem.Allocator) Self {
         return Self{
-            .items = std.ArrayList(Resolved).init(a),
-            .allocator = a,
+            .items = std.ArrayList(*Resolved).init(allocator),
+            .available = std.ArrayList(*Resolved).init(allocator),
+            .allocator = allocator,
             .mutex = Mutex{},
         };
     }
 
     pub fn deinit(self: *Self, sp: *ServiceProvider) void {
-        while (self.items.popOrNull()) |r| {
+        for (self.items.items) |r| {
             var mut = r;
             mut.deinit(sp);
         }
 
-        self.items.deinit();
-    }
-
-    pub fn delete(self: *Self, ptr: *anyopaque, sp: *ServiceProvider) bool {
-        for (self.items.items, 0..) |*ctx, i| {
-            if (ctx.ptr != null and
-                ctx.ptr.? == ptr)
-            {
-                var removed = self.items.swapRemove(i);
-                removed.deinit(sp);
-
-                return true;
-            }
+        for (self.items.items) |r| {
+            self.allocator.destroy(r);
         }
 
-        return false;
+        self.items.deinit();
+        self.available.deinit();
     }
 
-    pub fn add(self: *Self, resolved: Resolved) !void {
+    pub fn delete(self: *Self, ptr: *anyopaque, info: *IDependencyInfo, sp: *ServiceProvider) bool {
+        var found_idx: ?usize = null;
+
+        for (self.items.items, 0..) |resolved, i| {
+            if (resolved.ptr != null and
+                resolved.ptr.? == ptr and
+                resolved.info.? == info)
+                found_idx = i;
+        }
+
+        if (found_idx == null)
+            return false;
+
+        const found = self.items.items[found_idx.?];
+
+        self.makeAvailable(found, sp, found_idx);
+
+        return true;
+    }
+
+    pub fn findPartiallyDeinitOrCreate(self: *Self) !*Resolved {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        try self.items.append(resolved);
+        var ptr = self.available.popOrNull();
+        if (ptr == null) {
+            ptr = try self.addNewPtr();
+        }
+
+        return ptr.?;
+    }
+
+    fn addNewPtr(self: *Self) !*Resolved {
+        const ptr = try self.allocator.create(Resolved);
+        ptr.* = Resolved.empty(self.allocator);
+
+        try self.items.append(ptr);
+        return self.items.items[self.items.items.len - 1];
+    }
+
+    pub fn tryPassToAvailable(self: *Self, resolved: *Resolved, sp: *ServiceProvider) void {
+        if (resolved.info == null or resolved.info.?.life_cycle != .transient)
+            return;
+
+        self.makeAvailable(resolved, sp, null);
+    }
+
+    fn getIdx(self: *Self, resolved: *Resolved) ?usize {
+        for (self.items.items, 0..) |r, i| {
+            if (resolved == r)
+                return i;
+        }
+
+        return null;
+    }
+
+    pub fn makeAvailable(self: *Self, resolved: *Resolved, sp: *ServiceProvider, idx: ?usize) void {
+        var swa = std.heap.stackFallback(1024, self.allocator);
+        var iter = Resolved.TransientIterator.init(swa.get(), resolved) catch {
+            const found_idx = idx orelse self.getIdx(resolved) orelse return;
+            _ = self.items.swapRemove(found_idx);
+
+            resolved.deinit(sp);
+            self.allocator.destroy(resolved);
+
+            return;
+        };
+        defer iter.deinit();
+
+        while (iter.next()) |next| {
+            next.partiallyDeinit(sp);
+
+            self.available.append(next) catch {
+                const found_idx = idx orelse self.getIdx(resolved) orelse return;
+                _ = self.items.swapRemove(found_idx);
+
+                next.deinit(sp);
+                self.allocator.destroy(next);
+            };
+        }
     }
 };

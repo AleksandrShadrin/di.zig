@@ -27,6 +27,11 @@ pub const LifeCycle = enum {
 const Dependency = struct {
     name: []const u8,
     is_generic: bool,
+    is_slice: bool,
+
+    pub fn shouldSkip(self: Dependency) bool {
+        return self.is_slice or self.is_generic;
+    }
 };
 
 // Interface for dependency information
@@ -119,17 +124,20 @@ pub fn DependencyInfo(comptime T: type) type {
                         self.dep_array[i] = Dependency{
                             .name = generics.getName(deref_dep),
                             .is_generic = true,
+                            .is_slice = false,
                         };
                     } else {
                         self.dep_array[i] = Dependency{
                             .name = @typeName(deref_dep),
                             .is_generic = false,
+                            .is_slice = utilities.isSlice(deref_dep),
                         };
                     }
 
                     // Ensure that the dependency should be a reference
-                    if (utilities.deref(dep) == dep and
-                        dep != std.mem.Allocator)
+                    if (!utilities.isSlice(deref_dep) and
+                        dep != std.mem.Allocator and
+                        deref_dep == dep)
                         @compileError(@typeName(DerefT) ++ " dependency " ++ @typeName(dep) ++ " should be a reference");
                 }
             }
@@ -186,7 +194,7 @@ pub fn DependencyInfo(comptime T: type) type {
             const item: *DerefT = @ptrCast(@alignCast(ptr));
 
             Destructor(DerefT).deinit(item, sp) catch |err| {
-                std.log.err("Error when deinit {any} with error {any}", .{ DerefT, err });
+                std.log.warn("Error when deinit {any} with error {any}", .{ DerefT, err });
             };
         }
 

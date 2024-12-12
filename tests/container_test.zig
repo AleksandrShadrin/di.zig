@@ -53,6 +53,7 @@ const DatabaseService = struct {
 
 test "Dependency Injection Container - Should register services with custom builder fn" {
     const allocator = std.testing.allocator;
+
     var container = Container.init(allocator);
     defer container.deinit();
 

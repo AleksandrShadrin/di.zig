@@ -213,3 +213,9 @@ fn MockGeneric(comptime f: anytype) type {
         comptime inner_fn: @TypeOf(f) = f,
     };
 }
+
+pub inline fn isSlice(T: type) bool {
+    return @typeInfo(T) == .Struct and
+        @hasField(T, "ptr") and
+        @hasField(T, "len");
+}

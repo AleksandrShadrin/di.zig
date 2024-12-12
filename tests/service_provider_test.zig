@@ -404,7 +404,11 @@ test "Service Provider - Should deinit failed dependency" {
     defer sp.deinit();
 
     _ = sp.resolve(service.A) catch {};
-    try std.testing.expect(sp.transient_services.items.items.len == 0);
+
+    for (sp.transient_services.items.items) |s| {
+        try std.testing.expect(s.info == null and s.ptr == null);
+    }
+
     try std.testing.expect(sp.singleton.items.count() == 1);
 }
 
@@ -446,8 +450,9 @@ test "Service Provider - Should leak inner resolve dependency on fail build" {
     const a = sp.resolve(service.A);
     try std.testing.expectError(service.e.some_error, a);
 
-    // leaked
-    try std.testing.expect(sp.transient_services.items.items.len == 1);
+    // leaked 1 service
+    try std.testing.expect(sp.transient_services.items.items.len == 4);
+    try std.testing.expect(sp.transient_services.available.items.len == 3);
 }
 
 test "Service Provider - Should deinit inner resolve dependency on both fail build" {
@@ -470,5 +475,7 @@ test "Service Provider - Should deinit inner resolve dependency on both fail bui
     const a = sp.resolve(service.A);
     try std.testing.expectError(service.err.some_error, a);
 
-    try std.testing.expect(sp.transient_services.items.items.len == 0);
+    for (sp.transient_services.available.items) |s| {
+        try std.testing.expect(s.info == null and s.ptr == null);
+    }
 }

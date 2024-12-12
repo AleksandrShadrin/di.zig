@@ -24,6 +24,8 @@ pub const Container = struct {
     const Self = @This();
 
     dependencies: std.StringHashMap(IDependencyInfo),
+    factories: std.StringHashMap(std.ArrayList(IDependencyInfo)),
+
     allocator: std.mem.Allocator,
 
     mutex: Mutex = Mutex{},
@@ -31,16 +33,28 @@ pub const Container = struct {
     pub fn init(allocator: std.mem.Allocator) Container {
         return Container{
             .dependencies = std.StringHashMap(IDependencyInfo).init(allocator),
+            .factories = std.StringHashMap(std.ArrayList(IDependencyInfo)).init(allocator),
             .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *Container) void {
-        var iter = self.dependencies.valueIterator();
-        while (iter.next()) |dep_info| {
+        var dep_iter = self.dependencies.valueIterator();
+        while (dep_iter.next()) |dep_info| {
             dep_info.destroy(self.allocator);
         }
+
+        var factory_iter = self.factories.valueIterator();
+        while (factory_iter.next()) |factories| {
+            for (factories.items) |factory_info| {
+                factory_info.destroy(self.allocator);
+            }
+
+            factories.deinit();
+        }
+
         self.dependencies.deinit();
+        self.factories.deinit();
     }
 
     // Internal function to register a dependency with a specified lifecycle
@@ -86,14 +100,29 @@ pub const Container = struct {
         const builder = try utilities.getBuilder(ReturnType, Factory);
         dep_info.* = DependencyInfo(*ReturnType).initWithBuilder(builder, lifecycle);
 
-        try self.addDependency(dep_info.getInterface());
+        try self.addFactory(dep_info.getInterface());
     }
 
     fn addDependency(self: *Self, di: IDependencyInfo) !void {
-        const previous_di = self.dependencies.get(di.getName());
-        if (previous_di != null) previous_di.?.destroy(self.allocator);
+        const get_result = try self.dependencies.getOrPut(di.getName());
 
-        try self.dependencies.put(di.getName(), di);
+        if (get_result.found_existing)
+            get_result.value_ptr.destroy(self.allocator);
+
+        get_result.value_ptr.* = di;
+    }
+
+    fn addFactory(self: *Self, di: IDependencyInfo) !void {
+        const get_result = try self.factories.getOrPut(di.getName());
+
+        if (get_result.found_existing)
+            return try get_result.value_ptr.append(di);
+
+        var factories = std.ArrayList(IDependencyInfo).init(self.allocator);
+        errdefer factories.deinit();
+
+        try factories.append(di);
+        get_result.value_ptr.* = factories;
     }
 
     pub fn registerSingleton(self: *Self, comptime Dep: anytype) !void {
@@ -120,10 +149,39 @@ pub const Container = struct {
         try self.registerWithFactory(Factory, .transient);
     }
 
+    const DependencyWithFactories = struct {
+        dependency: ?*IDependencyInfo,
+        factories: []const IDependencyInfo,
+    };
+
+    pub fn getDependencyWithFactories(self: *Self, comptime T: type) DependencyWithFactories {
+        return .{
+            .dependency = self.getDependencyInfo(T),
+            .factories = self.getFactories(T),
+        };
+    }
+
     // New Feature: Retrieve IDependencyInfo by type T
     pub fn getDependencyInfo(self: *Self, comptime T: type) ?*IDependencyInfo {
         const typeName = @typeName(T);
-        return self.dependencies.getPtr(typeName);
+        return self.getDependencyInfoByName(typeName);
+    }
+
+    fn getDependencyInfoByName(self: *Self, typeName: []const u8) ?*IDependencyInfo {
+        const dep_ptr = self.dependencies.getPtr(typeName);
+
+        if (dep_ptr != null)
+            return dep_ptr;
+
+        const factories = self.factories.getPtr(typeName) orelse return null;
+        return &factories.items[factories.items.len - 1];
+    }
+
+    fn getFactories(self: *Self, comptime T: type) []const IDependencyInfo {
+        const typeName = @typeName(T);
+        const factories = self.factories.getPtr(typeName) orelse return &.{};
+
+        return factories.items;
     }
 
     pub fn getGenericWrapper(self: *Self, comptime T: type) ?IDependencyInfo {
@@ -153,14 +211,16 @@ pub const Container = struct {
                 var visited = std.StringHashMap(bool).init(self.allocator);
                 defer visited.deinit();
 
-                if (!dep.is_generic) try self.checkTransitiveDependencies(di, dep.name, &visited);
-                if (!dep.is_generic) try self.checkDependenciesLifeCycles(di);
+                if (!dep.shouldSkip()) {
+                    try self.checkTransitiveDependencies(di, dep.name, &visited);
+                    try self.checkDependenciesLifeCycles(di);
+                }
             }
         }
     }
 
     // Helper function to validate if a dependency exists or is allowed as a special case
-    fn checkDependencyValid(check: ?IDependencyInfo, dep_name: []const u8) !void {
+    fn checkDependencyValid(check: ?*IDependencyInfo, dep_name: []const u8) !void {
         if (check == null) {
             const is_allocator = std.mem.eql(u8, dep_name, @typeName(std.mem.Allocator));
             const is_sp = std.mem.eql(u8, dep_name, @typeName(ServiceProvider));
@@ -178,16 +238,16 @@ pub const Container = struct {
         const deps = check.getDependencies();
 
         for (deps) |dep| {
-            const dep_info = self.dependencies.get(dep.name);
+            const dep_info = self.getDependencyInfoByName(dep.name);
 
             // Validate that the dependency exists or is allowed
-            if (!dep.is_generic) try checkDependencyValid(dep_info, dep.name);
+            if (!dep.shouldSkip()) try checkDependencyValid(dep_info, dep.name);
 
             if (dep_info == null) {
                 return;
             }
 
-            const life_cycle = self.dependencies.get(dep.name).?.life_cycle;
+            const life_cycle = dep_info.?.life_cycle;
 
             // Ensure lifecycle consistency based on the current dependency's lifecycle
             switch (check.life_cycle) {
@@ -230,7 +290,7 @@ pub const Container = struct {
         try visited.put(dependency_name, true);
 
         // Retrieve the dependency information
-        var dep_info = self.dependencies.get(dependency_name);
+        var dep_info = self.getDependencyInfoByName(dependency_name);
 
         // Validate that the dependency exists or is allowed
         try checkDependencyValid(dep_info, dependency_name);
@@ -247,7 +307,7 @@ pub const Container = struct {
             }
 
             // Recursively check transitive dependencies
-            if (!dep.is_generic) try self.checkTransitiveDependencies(check, dep.name, visited);
+            if (!dep.shouldSkip()) try self.checkTransitiveDependencies(check, dep.name, visited);
         }
     }
 };
