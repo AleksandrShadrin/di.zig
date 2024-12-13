@@ -215,7 +215,8 @@ fn MockGeneric(comptime f: anytype) type {
 }
 
 pub inline fn isSlice(T: type) bool {
-    return @typeInfo(T) == .Struct and
-        @hasField(T, "ptr") and
-        @hasField(T, "len");
+    const ti = @typeInfo(T);
+
+    return ti == .Pointer and
+        ti.Pointer.size == .Slice;
 }

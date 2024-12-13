@@ -151,7 +151,7 @@ pub const Container = struct {
 
     const DependencyWithFactories = struct {
         dependency: ?*IDependencyInfo,
-        factories: []const IDependencyInfo,
+        factories: []IDependencyInfo,
     };
 
     pub fn getDependencyWithFactories(self: *Self, comptime T: type) DependencyWithFactories {
@@ -177,18 +177,51 @@ pub const Container = struct {
         return &factories.items[factories.items.len - 1];
     }
 
-    fn getFactories(self: *Self, comptime T: type) []const IDependencyInfo {
+    fn getFactories(self: *Self, comptime T: type) []IDependencyInfo {
         const typeName = @typeName(T);
         const factories = self.factories.getPtr(typeName) orelse return &.{};
 
         return factories.items;
     }
 
-    pub fn getGenericWrapper(self: *Self, comptime T: type) ?IDependencyInfo {
+    pub fn getGenericWrapper(self: *Self, comptime T: type) ?*IDependencyInfo {
         if (!generics.isGeneric(T))
             @compileError(@typeName(T) ++ " not a generic");
 
-        return self.dependencies.get(generics.getName(T));
+        return self.dependencies.getPtr(generics.getName(T));
+    }
+
+    pub fn getOrAddGeneric(self: *Self, comptime T: type) !*IDependencyInfo {
+        const inner_type: type = generics.getGenericType(T);
+
+        // Retrieve the dependency interface for the generic type from the container.
+        const generic_di_interface = self.getGenericWrapper(T);
+
+        // Check if the inner type and the generic type are already registered.
+        const concrete_di_interface = self.getDependencyInfo(inner_type);
+        const container_di_interface = self.getDependencyInfo(T);
+
+        if (generic_di_interface == null and
+            concrete_di_interface == null)
+            return ContainerError.ServiceNotFound;
+
+        if (container_di_interface != null and
+            concrete_di_interface != null)
+            return container_di_interface.?;
+
+        const life_cycle = if (concrete_di_interface != null) concrete_di_interface.?.life_cycle else generic_di_interface.?.life_cycle;
+
+        // If the generic type itself is not registered, register it based on its lifecycle.
+        if (container_di_interface == null) {
+            try self.register(T, life_cycle);
+        }
+
+        // If the inner type is not registered, register it based on its lifecycle.
+        if (concrete_di_interface == null) {
+            try self.register(inner_type, life_cycle);
+        }
+
+        return self.getDependencyInfo(T).?;
     }
 
     // Create a ServiceProvider instance after validating dependencies
