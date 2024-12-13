@@ -479,3 +479,33 @@ test "Service Provider - Should deinit inner resolve dependency on both fail bui
         try std.testing.expect(s.info == null and s.ptr == null);
     }
 }
+
+test "Service Provider - Should correctly resolve slice" {
+    const allocator = std.testing.allocator;
+
+    var container = Container.init(allocator);
+    defer container.deinit();
+
+    const service = @import("assets/services_with_builders.zig");
+    const Interceptor = @import("mocks/interceptor.zig").Interceptor;
+
+    try container.registerSingleton(Interceptor);
+
+    try container.registerTransient(service.A);
+    try container.registerTransientWithFactory(service.A.build1);
+    try container.registerTransientWithFactory(service.A.build2);
+    try container.registerTransientWithFactory(service.A.build3);
+
+    var sp = try container.createServiceProvider();
+    defer sp.deinit();
+
+    const a = try sp.resolveSlice(service.A);
+    try std.testing.expect(a.len == 4);
+
+    const interceptor = try sp.resolve(Interceptor);
+
+    try interceptor.assert_confirmed(service.statements.init);
+    try interceptor.assert_confirmed(service.statements.build1);
+    try interceptor.assert_confirmed(service.statements.build2);
+    try interceptor.assert_confirmed(service.statements.build3);
+}

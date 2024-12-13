@@ -154,14 +154,13 @@ pub const Container = struct {
         factories: []IDependencyInfo,
     };
 
-    pub fn getDependencyWithFactories(self: *Self, comptime T: type) DependencyWithFactories {
+    pub fn getDependencyWithFactories(self: *Self, comptime T: type) !DependencyWithFactories {
         return .{
-            .dependency = self.getDependencyInfo(T),
+            .dependency = if (generics.isGeneric(T)) try self.getOrAddGeneric(T) else self.getDependencyInfo(T),
             .factories = self.getFactories(T),
         };
     }
 
-    // New Feature: Retrieve IDependencyInfo by type T
     pub fn getDependencyInfo(self: *Self, comptime T: type) ?*IDependencyInfo {
         const typeName = @typeName(T);
         return self.getDependencyInfoByName(typeName);

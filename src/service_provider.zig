@@ -88,20 +88,20 @@ pub const ServiceProvider = struct {
 
         const dereferenced_type = utilities.deref(@TypeOf(T));
 
-        if (!utilities.isSlice(@TypeOf(T))) {
-            // Fetch the dependency information from the container.
-            const info = self.container.getDependencyInfo(dereferenced_type) orelse return ServiceProviderError.ServiceNotFound;
-
-            // Only dependencies with a transient lifecycle are eligible for unresolution.
-            if (info.life_cycle != .transient)
-                return ServiceProviderError.UnresolveLifeCycleShouldBeTransient;
-
-            // delete simple dependency
-            if (!self.transient_services.delete(getPtr(T), info, self)) return ServiceProviderError.NoResolveContextFound;
+        if (utilities.isSlice(dereferenced_type)) {
+            if (!self.transient_services.delete(getPtr(T), null, self)) return ServiceProviderError.NoResolveContextFound;
+            return;
         }
 
-        // delete slice
-        if (!self.transient_services.delete(getPtr(T), null, self)) return ServiceProviderError.NoResolveContextFound;
+        // Fetch the dependency information from the container.
+        const info = self.container.getDependencyInfo(dereferenced_type) orelse return ServiceProviderError.ServiceNotFound;
+
+        // Only dependencies with a transient lifecycle are eligible for unresolution.
+        if (info.life_cycle != .transient)
+            return ServiceProviderError.UnresolveLifeCycleShouldBeTransient;
+
+        // delete simple dependency
+        if (!self.transient_services.delete(getPtr(T), info, self)) return ServiceProviderError.NoResolveContextFound;
     }
 
     inline fn getPtr(T: anytype) *anyopaque {
@@ -225,7 +225,7 @@ pub const ServiceProvider = struct {
 
         errdefer resolved.partiallyDeinit(self);
 
-        const infos = self.container.getDependencyWithFactories(T);
+        const infos = try self.container.getDependencyWithFactories(T);
         var len: usize = if (infos.dependency != null) 1 else 0;
         len += infos.factories.len;
 
