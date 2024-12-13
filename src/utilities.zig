@@ -72,6 +72,9 @@ pub inline fn getInitArgs(comptime T: type) []const type {
 /// const same = deref(MyType);   // Returns MyType
 /// ```
 pub fn deref(comptime T: type) type {
+    if (isSlice(T))
+        return T;
+
     return switch (@typeInfo(T)) {
         .Pointer => @typeInfo(T).Pointer.child,
         else => T,
