@@ -223,7 +223,7 @@ pub const ServiceProvider = struct {
         var resolved = try self.transient_services.findPartiallyDeinitOrCreate();
         resolved.is_slice = true;
 
-        errdefer resolved.partiallyDeinit(self);
+        errdefer self.transient_services.makeAvailable(resolved, self, null);
 
         const infos = try self.container.getDependencyWithFactories(T);
         var len: usize = if (infos.dependency != null) 1 else 0;
@@ -233,18 +233,9 @@ pub const ServiceProvider = struct {
             return &.{};
 
         var slice = try self.allocator.alloc(*T, len);
+        errdefer self.allocator.free(slice);
+
         var createdServicesLen: usize = 0;
-
-        errdefer {
-            for (0..createdServicesLen) |i| {
-                self.unresolve(slice[i]) catch |err| {
-                    if (err != ServiceProviderError.UnresolveLifeCycleShouldBeTransient)
-                        std.log.warn("error while resolving {s}\n", .{@typeName(T)});
-                };
-            }
-
-            self.allocator.free(slice);
-        }
 
         if (infos.dependency != null) {
             var in_ctx = BuilderContext.init(self);
@@ -550,8 +541,9 @@ const Resolved = struct {
         self.ptr = null;
     }
 
-    fn hasLifeCycle(self: *Self, life_cycle: dependency.LifeCycle) bool {
-        return self.info != null and self.info.?.life_cycle == life_cycle;
+    fn isTransient(self: *Self) bool {
+        return self.is_slice or
+            (self.info != null and self.info.?.life_cycle == .transient);
     }
 
     pub const TransientIterator = struct {
@@ -561,7 +553,7 @@ const Resolved = struct {
         pub fn init(allocator: std.mem.Allocator, root: *Resolved) !TransientIterator {
             var stack = std.ArrayList(*Resolved).init(allocator);
 
-            if (root.hasLifeCycle(.transient))
+            if (root.isTransient())
                 try stack.append(root);
 
             return .{
@@ -584,7 +576,7 @@ const Resolved = struct {
             while (i > 0) {
                 i -= 1;
 
-                if (current.child.items[i].hasLifeCycle(.transient))
+                if (current.child.items[i].isTransient())
                     self.stack.append(current.child.items[i]) catch return null;
             }
 

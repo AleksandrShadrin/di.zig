@@ -509,3 +509,25 @@ test "Service Provider - Should correctly resolve slice" {
     try interceptor.assert_confirmed(service.statements.build2);
     try interceptor.assert_confirmed(service.statements.build3);
 }
+
+test "Service Provider - Should correctly cleanup on error when resolving slice" {
+    const allocator = std.testing.allocator;
+
+    var container = Container.init(allocator);
+    defer container.deinit();
+
+    const service = @import("assets/resolving_error_for_slice.zig");
+
+    try container.registerTransient(service.A);
+    try container.registerTransientWithFactory(service.A.build1);
+    try container.registerTransientWithFactory(service.A.build2);
+    try container.registerTransientWithFactory(service.A.build3);
+
+    var sp = try container.createServiceProvider();
+    defer sp.deinit();
+
+    const a = sp.resolveSlice(service.A);
+    try std.testing.expectError(service.err.some_error, a);
+
+    try std.testing.expect(sp.transient_services.available.items.len == 5);
+}
