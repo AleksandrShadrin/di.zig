@@ -15,6 +15,7 @@ pub const ServiceProviderError = error{
     NoActiveScope, // Attempted to resolve a scoped service without an active scope.
     UnresolveLifeCycleShouldBeTransient, // Tried to unresolve a service that isn't transient.
     CycleDependency,
+    LifeCycleError,
 };
 
 // Type aliases for dependency-related interfaces for convenience and readability.
@@ -627,6 +628,8 @@ const BuilderContext = struct {
             node.?.data.isVerified())
             return;
 
+        var prev_life_cycle = node.?.data.life_cycle;
+
         var visited = std.StringHashMap(bool).init(self.sp.allocator);
         defer visited.deinit();
 
@@ -634,6 +637,31 @@ const BuilderContext = struct {
             if (visited.contains(node.?.data.getName()))
                 return ServiceProviderError.CycleDependency;
 
+            if (prev_life_cycle != node.?.data.life_cycle) {
+                switch (node.?.data.life_cycle) {
+                    .transient => {
+                        if (prev_life_cycle != .transient) {
+                            std.log.warn("type {s} has life_cycle issues with dependency {s}\n", .{
+                                node.?.prev.?.data.getName(),
+                                node.?.data.getName(),
+                            });
+                            return ServiceProviderError.LifeCycleError;
+                        }
+                    },
+                    .scoped => {
+                        if (prev_life_cycle == .singleton) {
+                            std.log.warn("type {s} has life_cycle issues with dependency {s}\n", .{
+                                node.?.prev.?.data.getName(),
+                                node.?.data.getName(),
+                            });
+                            return ServiceProviderError.LifeCycleError;
+                        }
+                    },
+                    else => {},
+                }
+            }
+
+            prev_life_cycle = node.?.data.life_cycle;
             try visited.put(node.?.data.getName(), true);
         }
     }

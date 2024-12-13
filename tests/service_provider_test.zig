@@ -531,3 +531,20 @@ test "Service Provider - Should correctly cleanup on error when resolving slice"
 
     try std.testing.expect(sp.transient_services.available.items.len == 5);
 }
+
+test "Service Provider - Should correctly resolving slice with generic" {
+    const allocator = std.testing.allocator;
+
+    var container = Container.init(allocator);
+    defer container.deinit();
+
+    const service = @import("assets/services_correct_generics.zig");
+
+    try container.registerTransient(service.A);
+
+    var sp = try container.createServiceProvider();
+    defer sp.deinit();
+
+    const a = try sp.resolveSlice(di.Generic(service.A, .{u8}));
+    try std.testing.expect(a.len == 1);
+}
