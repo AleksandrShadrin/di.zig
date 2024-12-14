@@ -13,7 +13,7 @@ pub fn build(b: *std.Build) !void {
         name: []const u8,
         src: []const u8,
     }{
-        .{ .name = "mediatr", .src = "examples/mediatr.zig" },
+        .{ .name = "mediatr", .src = "examples/mediatr/main.zig" },
         .{ .name = "deinit", .src = "examples/deinit.zig" },
         .{ .name = "simple", .src = "examples/simple.zig" },
         .{ .name = "injector", .src = "examples/injector.zig" },
