@@ -9,6 +9,7 @@ A simple and lightweight dependency injection (DI) container for Zig. Manage you
 * Transients: New instance every time.
 * Scoped Services: Manage lifetimes within scopes.
 * Generics Support: Work with generic types smoothly.
+* Use factories to make abstractions
 * Error Handling: Gracefully handle errors when creating/allocating services
 * Object management: The service provider is responsible for deallocating objects. Add your custom `deinit` function, which will be automatically called when the object is deinitialized.
 
@@ -68,6 +69,15 @@ Managed within a specific scope.
 ```zig
 try container.registerScoped(MyService);
 ```
+
+### Factories
+
+You can also register factories to create instances of your services. This allows you to add multiple implementations
+
+```zig
+try container.registerSingletonFactory(builderFn);
+```
+
 ## Create a Service Provider
 
 After registering services, create a provider to resolve them.
@@ -82,6 +92,7 @@ Get instances of your services when needed.
 
 ```zig
 const myService = try serviceProvider.resolve(MyService);
+const myServices = try serviceProvider.resolveSlice(MyService); // get all registered services of type MyService, MyService if it was registered wihtout factory + all instances created by factories
 ```
 ## Handle Generics
 
@@ -104,12 +115,13 @@ defer scope.deinit();
 
 const scopedService = try scope.resolve(MyService);
 ```
-## Unresolve Transient Services
+## Unresolve Transient Services or slices
 
 Manually release a service if needed.
 
 ```zig
-try serviceProvider.unresolve(resolvedService);
+try serviceProvider.unresolve(resolvedService);    
+try serviceProvider.unresolve(resolvedServices); // resolved by resolveSlice
 ```
 
 # 🎉 Example
