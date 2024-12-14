@@ -548,3 +548,18 @@ test "Service Provider - Should correctly resolving slice with generic" {
     const a = try sp.resolveSlice(di.Generic(service.A, .{u8}));
     try std.testing.expect(a.len == 1);
 }
+
+test "Service Provider - Should correctly resolving slice with zero dependencies" {
+    const allocator = std.testing.allocator;
+
+    var container = Container.init(allocator);
+    defer container.deinit();
+
+    const service = struct {};
+
+    var sp = try container.createServiceProvider();
+    defer sp.deinit();
+
+    const a = try sp.resolveSlice(service);
+    try std.testing.expect(a.len == 0);
+}
