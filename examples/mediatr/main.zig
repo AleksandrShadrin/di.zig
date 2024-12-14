@@ -18,7 +18,6 @@ pub fn main() !void {
     var container = di.Container.init(allocator);
     defer container.deinit();
 
-    // Create controllers for different model types
     const get_writer = struct {
         pub fn get_writer() Writer {
             return Writer{
