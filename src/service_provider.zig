@@ -36,8 +36,10 @@ pub const ServiceProvider = struct {
     transient_services: TransientResolvedServices, // Maintains a list of root resolution contexts for tracking.
 
     singleton: OnceResolvedServices, // Stores instances of singleton services managed by the provider.
+    singleton_locks: ?SingletonLocks = null,
 
     scope: ?*Scope = null,
+    parent: ?*ServiceProvider = null,
 
     /// Initializes a new ServiceProvider instance.
     ///
@@ -53,6 +55,7 @@ pub const ServiceProvider = struct {
             .container = c,
             .transient_services = TransientResolvedServices.init(allocator),
             .singleton = try OnceResolvedServices.init(allocator),
+            .singleton_locks = SingletonLocks.init(allocator),
         };
     }
 
@@ -70,8 +73,11 @@ pub const ServiceProvider = struct {
         // Iterate through all root resolution contexts and deinitialize transient dependencies.
         self.transient_services.deinit(self);
 
-        if (self.scope == null)
+        if (self.parent == null)
             self.singleton.deinit(self);
+
+        if (self.singleton_locks != null)
+            self.singleton_locks.?.deinit();
     }
 
     /// Unresolves (deinitializes) a previously resolved dependency along with its nested dependencies.
@@ -203,7 +209,7 @@ pub const ServiceProvider = struct {
 
         // Special case handling for the ServiceProvider type.
         if (T == Self) {
-            return self;
+            return ctx.sp;
         }
 
         const dereferenced_type: type = utilities.deref(T);
@@ -224,7 +230,7 @@ pub const ServiceProvider = struct {
         var resolved = try self.transient_services.findPartiallyDeinitOrCreate();
         resolved.is_slice = true;
 
-        errdefer self.transient_services.makeAvailable(resolved, self, null);
+        errdefer self.transient_services.tryPassToAvailable(resolved, self);
 
         const infos = try self.container.getDependencyWithFactories(T);
         var len: usize = if (infos.dependency != null) 1 else 0;
@@ -333,14 +339,20 @@ pub const ServiceProvider = struct {
                 storage.?.ptr = ptr;
             },
             .singleton => {
+                const root_sp = self.getRoot();
+                new_root.allocator = root_sp.allocator;
+
+                const mutex = try root_sp.singleton_locks.?.acquireLock(info);
+                defer mutex.unlock();
+
                 if (self.singleton.get(info)) |singleton| {
                     storage = singleton;
                 } else {
                     const dep_info: *DependencyInfo(*T) = @ptrCast(@alignCast(info.ptr));
                     const value = try self.build(ctx, T, dep_info);
 
-                    const ptr: *T = try self.allocator.create(T);
-                    errdefer self.allocator.destroy(ptr);
+                    const ptr: *T = try root_sp.allocator.create(T);
+                    errdefer root_sp.allocator.destroy(ptr);
 
                     ptr.* = value;
                     new_root.ptr = ptr;
@@ -392,27 +404,47 @@ pub const ServiceProvider = struct {
     /// - An instance of type `T`.
     /// - An error if the building process fails.
     fn build(self: *Self, ctx: *BuilderContext, comptime T: type, dep_info: *DependencyInfo(*T)) !T {
+        const sp = switch (dep_info.life_cycle) {
+            .scoped, .transient => self,
+            .singleton => self.getRoot(),
+        };
+
+        const called_from = ctx.sp;
+        ctx.sp = sp;
+
+        defer ctx.sp = called_from;
+
         if (dep_info.builder == null) {
             // If no custom builder is provided, utilize the default compile-time builder.
             var b = ServiceProviderBuilder(T).createBuilder();
-
             return try b.buildFn(ctx);
         } else {
             // Use the custom builder function specified in the dependency's configuration.
-            return try dep_info.builder.?.build(self);
+            return try dep_info.builder.?.build(sp);
         }
     }
 
     pub fn initScope(self: *Self) !*Scope {
+        return try self.initScopeWithAllocator(self.allocator);
+    }
+
+    pub fn initScopeWithAllocator(self: *Self, allocator: std.mem.Allocator) !*Scope {
         var sp = try self.clone();
 
-        const scope_ptr = try self.allocator.create(Scope);
-        errdefer self.allocator.destroy(scope_ptr);
+        sp.parent = self.getRoot();
+        sp.allocator = allocator;
+
+        const scope_ptr = try allocator.create(Scope);
+        errdefer allocator.destroy(scope_ptr);
 
         sp.scope = scope_ptr;
 
-        scope_ptr.* = try Scope.init(sp, self.allocator);
+        scope_ptr.* = try Scope.init(sp, allocator);
         return scope_ptr;
+    }
+
+    fn getRoot(self: *Self) *Self {
+        return self.parent orelse self;
     }
 };
 
@@ -709,6 +741,42 @@ fn ServiceProviderBuilder(comptime T: type) type {
     };
 }
 
+const SingletonLocks = struct {
+    const Self = @This();
+
+    locks: std.AutoHashMap(*IDependencyInfo, Mutex),
+    mutex: Mutex,
+
+    pub fn init(allocator: std.mem.Allocator) Self {
+        return .{
+            .locks = std.AutoHashMap(*IDependencyInfo, Mutex).init(allocator),
+            .mutex = Mutex{},
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.locks.deinit();
+    }
+
+    // lock founded mutex or create new and lock it.
+    // Mutext should be unlocked from inner
+    pub fn acquireLock(self: *Self, info: *IDependencyInfo) !*Mutex {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var result = try self.locks.getOrPut(info);
+        if (result.found_existing) {
+            result.value_ptr.lock();
+            return result.value_ptr;
+        }
+
+        result.value_ptr.* = Mutex{};
+        result.value_ptr.lock();
+
+        return result.value_ptr;
+    }
+};
+
 const OnceResolvedServices = struct {
     const Self = @This();
 
@@ -835,7 +903,7 @@ const TransientResolvedServices = struct {
     }
 
     pub fn tryPassToAvailable(self: *Self, resolved: *Resolved, sp: *ServiceProvider) void {
-        if (resolved.info == null or resolved.info.?.life_cycle != .transient)
+        if (!resolved.isTransient())
             return;
 
         self.makeAvailable(resolved, sp, null);
