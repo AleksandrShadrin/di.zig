@@ -230,8 +230,10 @@ pub const ServiceProvider = struct {
         var len: usize = if (infos.dependency != null) 1 else 0;
         len += infos.factories.len;
 
-        if (len == 0)
+        if (len == 0) {
+            if (ctx.root == null) ctx.root = resolved;
             return &.{};
+        }
 
         var slice = try self.allocator.alloc(*T, len);
         errdefer self.allocator.free(slice);
@@ -628,7 +630,7 @@ const BuilderContext = struct {
             node.?.data.isVerified())
             return;
 
-        var prev_life_cycle = node.?.data.life_cycle;
+        var prev_info = node.?.data;
 
         var visited = std.StringHashMap(bool).init(self.sp.allocator);
         defer visited.deinit();
@@ -637,31 +639,9 @@ const BuilderContext = struct {
             if (visited.contains(node.?.data.getName()))
                 return ServiceProviderError.CycleDependency;
 
-            if (prev_life_cycle != node.?.data.life_cycle) {
-                switch (node.?.data.life_cycle) {
-                    .transient => {
-                        if (prev_life_cycle != .transient) {
-                            std.log.warn("type {s} has life_cycle issues with dependency {s}\n", .{
-                                node.?.prev.?.data.getName(),
-                                node.?.data.getName(),
-                            });
-                            return ServiceProviderError.LifeCycleError;
-                        }
-                    },
-                    .scoped => {
-                        if (prev_life_cycle == .singleton) {
-                            std.log.warn("type {s} has life_cycle issues with dependency {s}\n", .{
-                                node.?.prev.?.data.getName(),
-                                node.?.data.getName(),
-                            });
-                            return ServiceProviderError.LifeCycleError;
-                        }
-                    },
-                    else => {},
-                }
-            }
+            try container.Container.checkLifeCycles(prev_info, node.?.data);
 
-            prev_life_cycle = node.?.data.life_cycle;
+            prev_info = node.?.data;
             try visited.put(node.?.data.getName(), true);
         }
     }

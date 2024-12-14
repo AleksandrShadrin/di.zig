@@ -156,7 +156,7 @@ pub const Container = struct {
 
     pub fn getDependencyWithFactories(self: *Self, comptime T: type) !DependencyWithFactories {
         return .{
-            .dependency = if (generics.isGeneric(T)) try self.getOrAddGeneric(T) else self.getDependencyInfo(T),
+            .dependency = if (generics.isGeneric(T)) try self.getOrAddGeneric(T) else self.dependencies.getPtr(@typeName(T)),
             .factories = self.getFactories(T),
         };
     }
@@ -282,7 +282,7 @@ pub const Container = struct {
         }
     }
 
-    fn checkLifeCycles(parent: *IDependencyInfo, child: *IDependencyInfo) !void {
+    pub fn checkLifeCycles(parent: *IDependencyInfo, child: *IDependencyInfo) !void {
         switch (parent.life_cycle) {
             .singleton => {
                 if (child.life_cycle != .singleton) {
