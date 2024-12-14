@@ -26,11 +26,13 @@ pub const LifeCycle = enum {
 // Structure representing a single dependency
 const Dependency = struct {
     name: []const u8,
+
     is_generic: bool,
     is_slice: bool,
+    is_reserved: bool = false,
 
     pub fn shouldSkip(self: Dependency) bool {
-        return self.is_slice or self.is_generic;
+        return self.is_reserved or self.is_generic;
     }
 };
 
@@ -128,9 +130,10 @@ pub fn DependencyInfo(comptime T: type) type {
                         };
                     } else {
                         self.dep_array[i] = Dependency{
-                            .name = @typeName(deref_dep),
+                            .name = if (utilities.isSlice(deref_dep)) @typeName(utilities.deref(std.meta.Child(deref_dep))) else @typeName(deref_dep),
                             .is_generic = false,
                             .is_slice = utilities.isSlice(deref_dep),
+                            .is_reserved = dep == std.mem.Allocator or dep == *ServiceProvider,
                         };
                     }
 

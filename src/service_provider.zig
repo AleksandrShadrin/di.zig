@@ -15,6 +15,7 @@ pub const ServiceProviderError = error{
     NoActiveScope, // Attempted to resolve a scoped service without an active scope.
     UnresolveLifeCycleShouldBeTransient, // Tried to unresolve a service that isn't transient.
     CycleDependency,
+    LifeCycleError,
 };
 
 // Type aliases for dependency-related interfaces for convenience and readability.
@@ -88,6 +89,11 @@ pub const ServiceProvider = struct {
 
         const dereferenced_type = utilities.deref(@TypeOf(T));
 
+        if (utilities.isSlice(dereferenced_type)) {
+            if (!self.transient_services.delete(getPtr(T), null, self)) return ServiceProviderError.NoResolveContextFound;
+            return;
+        }
+
         // Fetch the dependency information from the container.
         const info = self.container.getDependencyInfo(dereferenced_type) orelse return ServiceProviderError.ServiceNotFound;
 
@@ -95,8 +101,15 @@ pub const ServiceProvider = struct {
         if (info.life_cycle != .transient)
             return ServiceProviderError.UnresolveLifeCycleShouldBeTransient;
 
-        // Search through all root resolution contexts to locate the matching dependency instance.
-        if (!self.transient_services.delete(@as(*anyopaque, T), info, self)) return ServiceProviderError.NoResolveContextFound;
+        // delete simple dependency
+        if (!self.transient_services.delete(getPtr(T), info, self)) return ServiceProviderError.NoResolveContextFound;
+    }
+
+    inline fn getPtr(T: anytype) *anyopaque {
+        if (utilities.isSlice(@TypeOf(T)))
+            return @ptrCast(@constCast(T.ptr));
+
+        return @as(*anyopaque, T);
     }
 
     /// Determines the error type based on the type `T` being resolved.
@@ -105,6 +118,8 @@ pub const ServiceProvider = struct {
     /// - Otherwise, it returns `anyerror!*T`.
     inline fn getResolveType(comptime T: type) type {
         if (T == std.mem.Allocator) {
+            return anyerror!T;
+        } else if (utilities.isSlice(T)) {
             return anyerror!T;
         } else {
             return anyerror!*T;
@@ -133,6 +148,17 @@ pub const ServiceProvider = struct {
         return result;
     }
 
+    pub fn resolveSlice(self: *Self, comptime T: type) ![]const *T {
+        // Initialize a new BuilderContext for this resolution operation.
+        var ctx = BuilderContext.init(self);
+
+        // Perform the actual resolution using the internal resolve method.
+        const result = try self.resolveStrategy(&ctx, []const *T);
+        ctx.root.?.is_root = true;
+
+        return result;
+    }
+
     /// Internal method responsible for the actual resolution of a dependency.
     ///
     /// This method manages the resolution context and delegates to `resolve_strategy` to handle the
@@ -156,7 +182,7 @@ pub const ServiceProvider = struct {
             @compileError("Can't return " ++ @typeName(T) ++ " it can be accessed through service provider or as dependency");
 
         // Execute the resolution strategy to obtain the dependency instance.
-        const resolved = try self.resolve_strategy(ctx, T);
+        const resolved = try self.resolveStrategy(ctx, T);
 
         return resolved;
     }
@@ -170,7 +196,7 @@ pub const ServiceProvider = struct {
     /// Returns:
     /// - An instance of the resolved dependency.
     /// - An error if the resolution strategy fails.
-    fn resolve_strategy(self: *Self, ctx: *BuilderContext, comptime T: type) getResolveType(T) {
+    fn resolveStrategy(self: *Self, ctx: *BuilderContext, comptime T: type) getResolveType(T) {
         // Special case handling for Allocator type.
         if (T == std.mem.Allocator)
             return self.allocator;
@@ -183,11 +209,60 @@ pub const ServiceProvider = struct {
         const dereferenced_type: type = utilities.deref(T);
 
         // Determine if the type is generic and delegate to the appropriate builder method.
-        if (generic.isGeneric(dereferenced_type)) {
+        if (utilities.isSlice(T)) {
+            const child = utilities.deref(std.meta.Child(T));
+            return try self.buildSlice(ctx, child);
+        } else if (generic.isGeneric(dereferenced_type)) {
             return try self.buildGenericType(ctx, dereferenced_type);
         } else {
-            return try self.buildSimpleType(ctx, dereferenced_type);
+            const info = self.container.getDependencyInfo(dereferenced_type) orelse return ServiceProviderError.ServiceNotFound;
+            return try self.buildSimpleType(ctx, dereferenced_type, info);
         }
+    }
+
+    fn buildSlice(self: *Self, ctx: *BuilderContext, T: type) ![]const *T {
+        var resolved = try self.transient_services.findPartiallyDeinitOrCreate();
+        resolved.is_slice = true;
+
+        errdefer self.transient_services.makeAvailable(resolved, self, null);
+
+        const infos = try self.container.getDependencyWithFactories(T);
+        var len: usize = if (infos.dependency != null) 1 else 0;
+        len += infos.factories.len;
+
+        if (len == 0) {
+            if (ctx.root == null) ctx.root = resolved;
+            return &.{};
+        }
+
+        var slice = try self.allocator.alloc(*T, len);
+        errdefer self.allocator.free(slice);
+
+        var createdServicesLen: usize = 0;
+
+        if (infos.dependency != null) {
+            var in_ctx = BuilderContext.init(self);
+            in_ctx.root = resolved;
+
+            slice[0] = try self.buildSimpleType(&in_ctx, T, infos.dependency.?);
+
+            createdServicesLen += 1;
+        }
+
+        for (infos.factories) |*info| {
+            var in_ctx = BuilderContext.init(self);
+            in_ctx.root = resolved;
+
+            slice[createdServicesLen] = try self.buildSimpleType(&in_ctx, T, info);
+
+            createdServicesLen += 1;
+        }
+
+        if (ctx.root != null) try ctx.root.?.child.append(resolved) else ctx.root = resolved;
+
+        resolved.ptr = @ptrCast(@alignCast(slice.ptr));
+
+        return slice;
     }
 
     /// Handles the resolution of generic dependency types.
@@ -203,41 +278,8 @@ pub const ServiceProvider = struct {
     /// - A pointer to the resolved generic dependency.
     /// - An error if the resolution process fails.
     fn buildGenericType(self: *Self, ctx: *BuilderContext, T: type) !*T {
-        const inner_type: type = generic.getGenericType(T);
-
-        // Retrieve the dependency interface for the generic type from the container.
-        const generic_di_interface = self.container.getGenericWrapper(T);
-
-        // Check if the inner type and the generic type are already registered.
-        const concrete_di_interface = self.container.getDependencyInfo(inner_type);
-        const container_di_interface = self.container.getDependencyInfo(T);
-
-        if (generic_di_interface == null and
-            concrete_di_interface == null)
-            return ServiceProviderError.ServiceNotFound;
-
-        const life_cycle = if (concrete_di_interface != null) concrete_di_interface.?.life_cycle else generic_di_interface.?.life_cycle;
-
-        // If the inner type is not registered, register it based on its lifecycle.
-        if (concrete_di_interface == null) {
-            try switch (life_cycle) {
-                .singleton => self.container.registerSingleton(inner_type),
-                .scoped => self.container.registerScoped(inner_type),
-                .transient => self.container.registerTransient(inner_type),
-            };
-        }
-
-        // If the generic type itself is not registered, register it based on its lifecycle.
-        if (container_di_interface == null) {
-            try switch (life_cycle) {
-                .singleton => self.container.registerSingleton(T),
-                .scoped => self.container.registerScoped(T),
-                .transient => self.container.registerTransient(T),
-            };
-        }
-
-        // Proceed to build the generic type as a simple (non-generic) type.
-        return try self.buildSimpleType(ctx, T);
+        const info = try self.container.getOrAddGeneric(T);
+        return try self.buildSimpleType(ctx, T, info);
     }
 
     /// Builds and instantiates a simple (non-generic) dependency type.
@@ -252,10 +294,7 @@ pub const ServiceProvider = struct {
     /// Returns:
     /// - A pointer to the instantiated dependency.
     /// - An error if the building process fails.
-    fn buildSimpleType(self: *Self, ctx: *BuilderContext, T: type) !*T {
-        // Retrieve the dependency interface information from the container.
-        var info = self.container.getDependencyInfo(T) orelse return ServiceProviderError.ServiceNotFound;
-
+    fn buildSimpleType(self: *Self, ctx: *BuilderContext, T: type, info: *IDependencyInfo) !*T {
         var node = std.DoublyLinkedList(*IDependencyInfo).Node{ .data = info };
         ctx.append(&node);
         defer {
@@ -294,7 +333,7 @@ pub const ServiceProvider = struct {
                 storage.?.ptr = ptr;
             },
             .singleton => {
-                if (self.singleton.get(info.getName())) |singleton| {
+                if (self.singleton.get(info)) |singleton| {
                     storage = singleton;
                 } else {
                     const dep_info: *DependencyInfo(*T) = @ptrCast(@alignCast(info.ptr));
@@ -313,7 +352,7 @@ pub const ServiceProvider = struct {
                 if (self.scope == null)
                     return ServiceProviderError.NoActiveScope;
 
-                if (self.scope.?.resolved_services.get(info.getName())) |scoped| {
+                if (self.scope.?.resolved_services.get(info)) |scoped| {
                     storage = scoped;
                 } else {
                     const dep_info: *DependencyInfo(*T) = @ptrCast(@alignCast(info.ptr));
@@ -444,6 +483,7 @@ const Resolved = struct {
     allocator: std.mem.Allocator, // Allocator used for managing memory within this Resolved context.
 
     is_root: bool = false,
+    is_slice: bool = false,
 
     /// Constructs an empty Resolved instance with an initialized child list.
     ///
@@ -461,42 +501,52 @@ const Resolved = struct {
 
     /// Deinitializes the Resolved instance, recursively cleaning up all nested dependencies.
     pub fn deinit(self: *Self, sp: *ServiceProvider) void {
-        defer self.child.clearAndFree();
-        // Recursively deinitialize all child dependencies to ensure proper cleanup.
-        if (self.info == null) return;
-
-        // Deinitialize the dependency instance if it exists.
-        if (self.ptr != null) {
-            self.info.?.callDeinit(self.ptr.?, sp);
-            self.info.?.destroyDependency(self.ptr.?, self.allocator);
-
-            self.ptr = null;
+        defer {
+            self.child.clearAndFree();
+            self.is_root = false;
+            self.is_slice = false;
+            self.info = null;
         }
 
-        self.info = null;
+        // Deinitialize the dependency instance
+        if (self.is_slice) self.deinitSlice(sp) else self.deinitDependency(sp);
     }
 
-    /// Recursively deinitializes only transient dependencies within this Resolved context.
     pub fn partiallyDeinit(self: *Self, sp: *ServiceProvider) void {
-        // Recursively deinitialize all child dependencies to ensure proper cleanup.
-        defer self.child.clearRetainingCapacity();
-
-        self.is_root = false;
-        if (self.info == null) return;
-
-        // Deinitialize the dependency instance if it exists.
-        if (self.ptr != null) {
-            self.info.?.callDeinit(self.ptr.?, sp);
-            self.info.?.destroyDependency(self.ptr.?, self.allocator);
-
-            self.ptr = null;
+        defer {
+            self.child.clearRetainingCapacity();
+            self.is_root = false;
+            self.is_slice = false;
+            self.info = null;
         }
 
-        self.info = null;
+        // Deinitialize the dependency instance
+        if (self.is_slice) self.deinitSlice(sp) else self.deinitDependency(sp);
     }
 
-    fn hasLifeCycle(self: *Self, life_cycle: dependency.LifeCycle) bool {
-        return self.info != null and self.info.?.life_cycle == life_cycle;
+    fn deinitDependency(self: *Self, sp: *ServiceProvider) void {
+        if (self.ptr == null)
+            return;
+
+        self.info.?.callDeinit(self.ptr.?, sp);
+        self.info.?.destroyDependency(self.ptr.?, self.allocator);
+
+        self.ptr = null;
+    }
+
+    fn deinitSlice(self: *Self, sp: *ServiceProvider) void {
+        if (self.ptr == null)
+            return;
+
+        const slice: []*anyopaque = @as([*]*anyopaque, @ptrCast(@alignCast(self.ptr)))[0..self.child.items.len];
+
+        sp.allocator.free(slice);
+        self.ptr = null;
+    }
+
+    fn isTransient(self: *Self) bool {
+        return self.is_slice or
+            (self.info != null and self.info.?.life_cycle == .transient);
     }
 
     pub const TransientIterator = struct {
@@ -506,7 +556,7 @@ const Resolved = struct {
         pub fn init(allocator: std.mem.Allocator, root: *Resolved) !TransientIterator {
             var stack = std.ArrayList(*Resolved).init(allocator);
 
-            if (root.hasLifeCycle(.transient))
+            if (root.isTransient())
                 try stack.append(root);
 
             return .{
@@ -529,7 +579,7 @@ const Resolved = struct {
             while (i > 0) {
                 i -= 1;
 
-                if (current.child.items[i].hasLifeCycle(.transient))
+                if (current.child.items[i].isTransient())
                     self.stack.append(current.child.items[i]) catch return null;
             }
 
@@ -580,6 +630,8 @@ const BuilderContext = struct {
             node.?.data.isVerified())
             return;
 
+        var prev_info = node.?.data;
+
         var visited = std.StringHashMap(bool).init(self.sp.allocator);
         defer visited.deinit();
 
@@ -587,6 +639,9 @@ const BuilderContext = struct {
             if (visited.contains(node.?.data.getName()))
                 return ServiceProviderError.CycleDependency;
 
+            try container.Container.checkLifeCycles(prev_info, node.?.data);
+
+            prev_info = node.?.data;
             try visited.put(node.?.data.getName(), true);
         }
     }
@@ -633,7 +688,7 @@ fn ServiceProviderBuilder(comptime T: type) type {
 
             // Iterate over each argument type, resolve it, and populate the tuple.
             inline for (arg_types, 0..) |arg_type, i| {
-                tuple[i] = try b_ctx.sp.resolve_strategy(b_ctx, utilities.deref(arg_type));
+                tuple[i] = try b_ctx.sp.resolveStrategy(b_ctx, utilities.deref(arg_type));
             }
 
             // Call the `init` function with the resolved dependencies.
@@ -657,14 +712,14 @@ fn ServiceProviderBuilder(comptime T: type) type {
 const OnceResolvedServices = struct {
     const Self = @This();
 
-    items: *std.StringHashMap(*Resolved),
+    items: *std.AutoHashMap(*IDependencyInfo, *Resolved),
     allocator: std.mem.Allocator,
 
     mutex: Mutex,
 
     pub fn init(allocator: std.mem.Allocator) !Self {
-        const items_ptr = try allocator.create(std.StringHashMap(*Resolved));
-        items_ptr.* = std.StringHashMap(*Resolved).init(allocator);
+        const items_ptr = try allocator.create(std.AutoHashMap(*IDependencyInfo, *Resolved));
+        items_ptr.* = std.AutoHashMap(*IDependencyInfo, *Resolved).init(allocator);
 
         return Self{
             .items = items_ptr,
@@ -685,21 +740,25 @@ const OnceResolvedServices = struct {
         self.allocator.destroy(self.items);
     }
 
-    pub fn get(self: *Self, name: []const u8) ?*Resolved {
-        return self.items.get(name);
+    pub fn get(self: *Self, info: *IDependencyInfo) ?*Resolved {
+        return self.items.get(info);
     }
 
     pub fn add(self: *Self, resolved: Resolved) !*Resolved {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        const ptr = try self.allocator.create(Resolved);
-        ptr.* = resolved;
+        const entry = try self.items.getOrPut(resolved.info.?);
+        errdefer _ = self.items.remove(resolved.info.?);
 
-        errdefer self.allocator.destroy(ptr);
+        if (!entry.found_existing) {
+            const ptr = try self.allocator.create(Resolved);
+            ptr.* = resolved;
 
-        try self.items.put(resolved.info.?.getName(), ptr);
-        return ptr;
+            entry.value_ptr.* = ptr;
+        }
+
+        return entry.value_ptr.*;
     }
 };
 
@@ -736,14 +795,14 @@ const TransientResolvedServices = struct {
         self.available.deinit();
     }
 
-    pub fn delete(self: *Self, ptr: *anyopaque, info: *IDependencyInfo, sp: *ServiceProvider) bool {
+    pub fn delete(self: *Self, ptr: *anyopaque, info: ?*IDependencyInfo, sp: *ServiceProvider) bool {
         var found_idx: ?usize = null;
 
         for (self.items.items, 0..) |resolved, i| {
             if (resolved.ptr != null and
                 resolved.is_root and
                 resolved.ptr.? == ptr and
-                resolved.info.? == info)
+                resolved.info == info)
             {
                 found_idx = i;
                 break;

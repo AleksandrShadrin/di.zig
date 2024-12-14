@@ -151,17 +151,16 @@ pub const Container = struct {
 
     const DependencyWithFactories = struct {
         dependency: ?*IDependencyInfo,
-        factories: []const IDependencyInfo,
+        factories: []IDependencyInfo,
     };
 
-    pub fn getDependencyWithFactories(self: *Self, comptime T: type) DependencyWithFactories {
+    pub fn getDependencyWithFactories(self: *Self, comptime T: type) !DependencyWithFactories {
         return .{
-            .dependency = self.getDependencyInfo(T),
+            .dependency = if (generics.isGeneric(T)) try self.getOrAddGeneric(T) else self.dependencies.getPtr(@typeName(T)),
             .factories = self.getFactories(T),
         };
     }
 
-    // New Feature: Retrieve IDependencyInfo by type T
     pub fn getDependencyInfo(self: *Self, comptime T: type) ?*IDependencyInfo {
         const typeName = @typeName(T);
         return self.getDependencyInfoByName(typeName);
@@ -177,18 +176,54 @@ pub const Container = struct {
         return &factories.items[factories.items.len - 1];
     }
 
-    fn getFactories(self: *Self, comptime T: type) []const IDependencyInfo {
-        const typeName = @typeName(T);
-        const factories = self.factories.getPtr(typeName) orelse return &.{};
+    fn getFactoriesByName(self: *Self, name: []const u8) []IDependencyInfo {
+        const factories = self.factories.getPtr(name) orelse return &.{};
 
         return factories.items;
     }
 
-    pub fn getGenericWrapper(self: *Self, comptime T: type) ?IDependencyInfo {
+    fn getFactories(self: *Self, comptime T: type) []IDependencyInfo {
+        return self.getFactoriesByName(@typeName(T));
+    }
+
+    pub fn getGenericWrapper(self: *Self, comptime T: type) ?*IDependencyInfo {
         if (!generics.isGeneric(T))
             @compileError(@typeName(T) ++ " not a generic");
 
-        return self.dependencies.get(generics.getName(T));
+        return self.dependencies.getPtr(generics.getName(T));
+    }
+
+    pub fn getOrAddGeneric(self: *Self, comptime T: type) !*IDependencyInfo {
+        const inner_type: type = generics.getGenericType(T);
+
+        // Retrieve the dependency interface for the generic type from the container.
+        const generic_di_interface = self.getGenericWrapper(T);
+
+        // Check if the inner type and the generic type are already registered.
+        const concrete_di_interface = self.getDependencyInfo(inner_type);
+        const container_di_interface = self.getDependencyInfo(T);
+
+        if (generic_di_interface == null and
+            concrete_di_interface == null)
+            return ContainerError.ServiceNotFound;
+
+        if (container_di_interface != null and
+            concrete_di_interface != null)
+            return container_di_interface.?;
+
+        const life_cycle = if (concrete_di_interface != null) concrete_di_interface.?.life_cycle else generic_di_interface.?.life_cycle;
+
+        // If the generic type itself is not registered, register it based on its lifecycle.
+        if (container_di_interface == null) {
+            try self.register(T, life_cycle);
+        }
+
+        // If the inner type is not registered, register it based on its lifecycle.
+        if (concrete_di_interface == null) {
+            try self.register(inner_type, life_cycle);
+        }
+
+        return self.getDependencyInfo(T).?;
     }
 
     // Create a ServiceProvider instance after validating dependencies
@@ -207,26 +242,17 @@ pub const Container = struct {
         var iter = self.dependencies.valueIterator();
 
         while (iter.next()) |di| {
+            var visited = std.AutoHashMap(*IDependencyInfo, bool).init(self.allocator);
+            defer visited.deinit();
+
             for (di.getDependencies()) |dep| {
-                var visited = std.StringHashMap(bool).init(self.allocator);
-                defer visited.deinit();
+                if (dep.shouldSkip()) continue;
 
-                if (!dep.shouldSkip()) {
-                    try self.checkTransitiveDependencies(di, dep.name, &visited);
-                    try self.checkDependenciesLifeCycles(di);
-                }
+                const info = self.getDependencyInfoByName(dep.name) orelse return ContainerError.ServiceNotFound;
+                try self.checkTransitiveDependencies(di, info, &visited);
             }
-        }
-    }
 
-    // Helper function to validate if a dependency exists or is allowed as a special case
-    fn checkDependencyValid(check: ?*IDependencyInfo, dep_name: []const u8) !void {
-        if (check == null) {
-            const is_allocator = std.mem.eql(u8, dep_name, @typeName(std.mem.Allocator));
-            const is_sp = std.mem.eql(u8, dep_name, @typeName(ServiceProvider));
-
-            if (is_allocator or is_sp) return;
-            return ContainerError.ServiceNotFound;
+            try self.checkDependenciesLifeCycles(di);
         }
     }
 
@@ -238,39 +264,45 @@ pub const Container = struct {
         const deps = check.getDependencies();
 
         for (deps) |dep| {
-            const dep_info = self.getDependencyInfoByName(dep.name);
-
             // Validate that the dependency exists or is allowed
-            if (!dep.shouldSkip()) try checkDependencyValid(dep_info, dep.name);
+            if (dep.shouldSkip()) continue;
 
-            if (dep_info == null) {
-                return;
+            const info = self.getDependencyInfoByName(dep.name);
+            if (!dep.is_slice and info == null) return ContainerError.ServiceNotFound;
+
+            if (info != null) try checkLifeCycles(check, info.?);
+
+            if (dep.is_slice) {
+                const factories = self.getFactoriesByName(dep.name);
+
+                for (factories) |*factory| {
+                    try checkLifeCycles(check, factory);
+                }
             }
+        }
+    }
 
-            const life_cycle = dep_info.?.life_cycle;
-
-            // Ensure lifecycle consistency based on the current dependency's lifecycle
-            switch (check.life_cycle) {
-                .singleton => {
-                    if (life_cycle != .singleton) {
-                        std.log.warn(
-                            "{s} is singleton and has dependency {s} with less lifecycle.",
-                            .{ check.getName(), dep.name },
-                        );
-                        return ContainerError.LifeCycleError;
-                    }
-                },
-                .scoped => {
-                    if (life_cycle == .transient) {
-                        std.log.warn(
-                            "{s} is scoped and has dependency {s} with less lifecycle.",
-                            .{ check.getName(), dep.name },
-                        );
-                        return ContainerError.LifeCycleError;
-                    }
-                },
-                else => {},
-            }
+    pub fn checkLifeCycles(parent: *IDependencyInfo, child: *IDependencyInfo) !void {
+        switch (parent.life_cycle) {
+            .singleton => {
+                if (child.life_cycle != .singleton) {
+                    std.log.warn(
+                        "{s} is singleton and has dependency {s} with less lifecycle.",
+                        .{ parent.getName(), child.getName() },
+                    );
+                    return ContainerError.LifeCycleError;
+                }
+            },
+            .scoped => {
+                if (child.life_cycle == .transient) {
+                    std.log.warn(
+                        "{s} is scoped and has dependency {s} with less lifecycle.",
+                        .{ parent.getName(), child.getName() },
+                    );
+                    return ContainerError.LifeCycleError;
+                }
+            },
+            else => {},
         }
     }
 
@@ -278,36 +310,29 @@ pub const Container = struct {
     fn checkTransitiveDependencies(
         self: *Self,
         check: *IDependencyInfo,
-        dependency_name: []const u8,
-        visited: *std.StringHashMap(bool),
+        dependency: *IDependencyInfo,
+        visited: *std.AutoHashMap(*IDependencyInfo, bool),
     ) !void {
+        if (check == dependency)
+            return ContainerError.CircularDependency;
+
         // If already visited, skip to prevent infinite recursion
-        if (visited.contains(dependency_name)) {
+        if (visited.contains(dependency)) {
             return;
         }
 
         // Mark the current dependency as visited
-        try visited.put(dependency_name, true);
+        try visited.put(dependency, true);
 
-        // Retrieve the dependency information
-        var dep_info = self.getDependencyInfoByName(dependency_name);
+        for (dependency.getDependencies()) |dep| {
+            if (dep.shouldSkip()) continue;
 
-        // Validate that the dependency exists or is allowed
-        try checkDependencyValid(dep_info, dependency_name);
+            const info = self.getDependencyInfoByName(dep.name) orelse {
+                std.log.warn("dependency {s} not registered\n", .{dep.name});
+                return ContainerError.ServiceNotFound;
+            };
 
-        if (dep_info == null) {
-            return;
-        }
-
-        const deps = dep_info.?.getDependencies();
-        for (deps) |dep| {
-            // If the dependency directly depends on the initial check, report a transitive dependency error
-            if (std.mem.eql(u8, dep.name, check.getName())) {
-                return ContainerError.CircularDependency;
-            }
-
-            // Recursively check transitive dependencies
-            if (!dep.shouldSkip()) try self.checkTransitiveDependencies(check, dep.name, visited);
+            try self.checkTransitiveDependencies(check, info, visited);
         }
     }
 };

@@ -72,6 +72,9 @@ pub inline fn getInitArgs(comptime T: type) []const type {
 /// const same = deref(MyType);   // Returns MyType
 /// ```
 pub fn deref(comptime T: type) type {
+    if (isSlice(T))
+        return T;
+
     return switch (@typeInfo(T)) {
         .Pointer => @typeInfo(T).Pointer.child,
         else => T,
@@ -215,7 +218,8 @@ fn MockGeneric(comptime f: anytype) type {
 }
 
 pub inline fn isSlice(T: type) bool {
-    return @typeInfo(T) == .Struct and
-        @hasField(T, "ptr") and
-        @hasField(T, "len");
+    const ti = @typeInfo(T);
+
+    return ti == .Pointer and
+        ti.Pointer.size == .Slice;
 }

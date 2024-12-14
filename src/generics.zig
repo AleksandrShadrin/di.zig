@@ -27,8 +27,9 @@ pub fn GenericFnWrapper(comptime generic_fn: anytype) type {
     };
 }
 
-pub inline fn isGeneric(comptime T: anytype) bool {
-    return @hasField(T, "generic_fn") and
+pub inline fn isGeneric(comptime T: type) bool {
+    return @typeInfo(T) == .Struct and
+        @hasField(T, "generic_fn") and
         @hasField(T, "generic_payload");
 }
 
