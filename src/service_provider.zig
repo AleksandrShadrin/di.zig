@@ -59,12 +59,12 @@ pub const ServiceProvider = struct {
         };
     }
 
-    fn clone(self: *Self) !Self {
+    fn clone(self: *Self, allocator: std.mem.Allocator) !Self {
         return Self{
             .singleton = self.singleton,
-            .allocator = self.allocator,
+            .allocator = allocator,
             .container = self.container,
-            .transient_services = TransientResolvedServices.init(self.allocator),
+            .transient_services = TransientResolvedServices.init(allocator),
         };
     }
 
@@ -255,7 +255,7 @@ pub const ServiceProvider = struct {
             createdServicesLen += 1;
         }
 
-        for (infos.factories) |*info| {
+        for (infos.factories) |info| {
             var in_ctx = BuilderContext.init(self);
             in_ctx.root = resolved;
 
@@ -429,10 +429,9 @@ pub const ServiceProvider = struct {
     }
 
     pub fn initScopeWithAllocator(self: *Self, allocator: std.mem.Allocator) !*Scope {
-        var sp = try self.clone();
+        var sp = try self.clone(allocator);
 
         sp.parent = self.getRoot();
-        sp.allocator = allocator;
 
         const scope_ptr = try allocator.create(Scope);
         errdefer allocator.destroy(scope_ptr);
@@ -864,27 +863,41 @@ const TransientResolvedServices = struct {
     }
 
     pub fn delete(self: *Self, ptr: *anyopaque, info: ?*IDependencyInfo, sp: *ServiceProvider) bool {
-        var found_idx: ?usize = null;
+        var found_idx: usize = undefined;
 
-        for (self.items.items, 0..) |resolved, i| {
-            if (resolved.ptr != null and
-                resolved.is_root and
-                resolved.ptr.? == ptr and
-                resolved.info == info)
-            {
-                found_idx = i;
-                break;
-            }
+        if (info == null) {
+            found_idx = self.searchByPtr(ptr) orelse return false;
+        } else {
+            found_idx = self.searchByPtrAndInfo(ptr, info.?) orelse return false;
         }
 
-        if (found_idx == null)
-            return false;
-
-        const found = self.items.items[found_idx.?];
+        const found = self.items.items[found_idx];
 
         self.makeAvailable(found, sp, found_idx);
 
         return true;
+    }
+
+    fn searchByPtr(self: *Self, ptr: *anyopaque) ?usize {
+        for (self.items.items, 0..) |r, i| {
+            if (r.ptr != null and
+                r.ptr.? == ptr)
+                return i;
+        }
+
+        return null;
+    }
+
+    fn searchByPtrAndInfo(self: *Self, ptr: *anyopaque, info: *IDependencyInfo) ?usize {
+        for (self.items.items, 0..) |r, i| {
+            if (r.ptr != null and
+                r.info != null and
+                r.ptr.? == ptr and
+                r.info.? == info)
+                return i;
+        }
+
+        return null;
     }
 
     pub fn findPartiallyDeinitOrCreate(self: *Self) !*Resolved {

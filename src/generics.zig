@@ -44,18 +44,5 @@ pub fn getName(comptime T: type) []const u8 {
 }
 
 pub fn Generic(f: anytype, args: anytype) type {
-    const inner_type: type = @call(.auto, f, args);
-
-    return struct {
-        const Self = @This();
-
-        comptime generic_fn: @TypeOf(f) = f,
-        generic_payload: *inner_type,
-
-        pub fn init(payload: *inner_type) Self {
-            return Self{
-                .generic_payload = payload,
-            };
-        }
-    };
+    return GenericFnWrapper(f).GenericContainer(args);
 }
