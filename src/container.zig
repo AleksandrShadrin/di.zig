@@ -23,8 +23,8 @@ pub const ContainerError = error{
 pub const Container = struct {
     const Self = @This();
 
-    dependencies: std.StringHashMap(IDependencyInfo),
-    factories: std.StringHashMap(std.ArrayList(IDependencyInfo)),
+    dependencies: std.StringHashMap(*IDependencyInfo),
+    factories: std.StringHashMap(std.ArrayList(*IDependencyInfo)),
 
     allocator: std.mem.Allocator,
 
@@ -32,8 +32,8 @@ pub const Container = struct {
 
     pub fn init(allocator: std.mem.Allocator) Container {
         return Container{
-            .dependencies = std.StringHashMap(IDependencyInfo).init(allocator),
-            .factories = std.StringHashMap(std.ArrayList(IDependencyInfo)).init(allocator),
+            .dependencies = std.StringHashMap(*IDependencyInfo).init(allocator),
+            .factories = std.StringHashMap(std.ArrayList(*IDependencyInfo)).init(allocator),
             .allocator = allocator,
         };
     }
@@ -41,13 +41,15 @@ pub const Container = struct {
     pub fn deinit(self: *Container) void {
         var dep_iter = self.dependencies.valueIterator();
         while (dep_iter.next()) |dep_info| {
-            dep_info.destroy(self.allocator);
+            dep_info.*.destroy(self.allocator);
+            self.allocator.destroy(dep_info.*);
         }
 
         var factory_iter = self.factories.valueIterator();
         while (factory_iter.next()) |factories| {
             for (factories.items) |factory_info| {
                 factory_info.destroy(self.allocator);
+                self.allocator.destroy(factory_info);
             }
 
             factories.deinit();
@@ -106,22 +108,35 @@ pub const Container = struct {
     fn addDependency(self: *Self, di: IDependencyInfo) !void {
         const get_result = try self.dependencies.getOrPut(di.getName());
 
-        if (get_result.found_existing)
-            get_result.value_ptr.destroy(self.allocator);
+        const ptr = try self.allocator.create(IDependencyInfo);
+        ptr.* = di;
 
-        get_result.value_ptr.* = di;
+        errdefer self.allocator.destroy(ptr);
+
+        if (get_result.found_existing) {
+            get_result.value_ptr.*.destroy(self.allocator);
+            self.allocator.destroy(get_result.value_ptr.*);
+        }
+
+        get_result.value_ptr.* = ptr;
     }
 
     fn addFactory(self: *Self, di: IDependencyInfo) !void {
         const get_result = try self.factories.getOrPut(di.getName());
 
-        if (get_result.found_existing)
-            return try get_result.value_ptr.append(di);
+        const ptr = try self.allocator.create(IDependencyInfo);
+        ptr.* = di;
 
-        var factories = std.ArrayList(IDependencyInfo).init(self.allocator);
+        errdefer self.allocator.destroy(ptr);
+
+        if (get_result.found_existing) {
+            return try get_result.value_ptr.append(ptr);
+        }
+
+        var factories = std.ArrayList(*IDependencyInfo).init(self.allocator);
         errdefer factories.deinit();
 
-        try factories.append(di);
+        try factories.append(ptr);
         get_result.value_ptr.* = factories;
     }
 
@@ -151,12 +166,12 @@ pub const Container = struct {
 
     const DependencyWithFactories = struct {
         dependency: ?*IDependencyInfo,
-        factories: []IDependencyInfo,
+        factories: []*IDependencyInfo,
     };
 
     pub fn getDependencyWithFactories(self: *Self, comptime T: type) !DependencyWithFactories {
         return .{
-            .dependency = if (generics.isGeneric(T)) try self.getOrAddGeneric(T) else self.dependencies.getPtr(@typeName(T)),
+            .dependency = if (generics.isGeneric(T)) try self.getOrAddGeneric(T) else self.dependencies.get(@typeName(T)),
             .factories = self.getFactories(T),
         };
     }
@@ -167,22 +182,22 @@ pub const Container = struct {
     }
 
     fn getDependencyInfoByName(self: *Self, typeName: []const u8) ?*IDependencyInfo {
-        const dep_ptr = self.dependencies.getPtr(typeName);
+        const dep_ptr = self.dependencies.get(typeName);
 
         if (dep_ptr != null)
             return dep_ptr;
 
-        const factories = self.factories.getPtr(typeName) orelse return null;
-        return &factories.items[factories.items.len - 1];
+        const factories = self.factories.get(typeName) orelse return null;
+        return factories.items[factories.items.len - 1];
     }
 
-    fn getFactoriesByName(self: *Self, name: []const u8) []IDependencyInfo {
+    fn getFactoriesByName(self: *Self, name: []const u8) []*IDependencyInfo {
         const factories = self.factories.getPtr(name) orelse return &.{};
 
         return factories.items;
     }
 
-    fn getFactories(self: *Self, comptime T: type) []IDependencyInfo {
+    fn getFactories(self: *Self, comptime T: type) []*IDependencyInfo {
         return self.getFactoriesByName(@typeName(T));
     }
 
@@ -190,7 +205,7 @@ pub const Container = struct {
         if (!generics.isGeneric(T))
             @compileError(@typeName(T) ++ " not a generic");
 
-        return self.dependencies.getPtr(generics.getName(T));
+        return self.dependencies.get(generics.getName(T));
     }
 
     pub fn getOrAddGeneric(self: *Self, comptime T: type) !*IDependencyInfo {
@@ -245,14 +260,14 @@ pub const Container = struct {
             var visited = std.AutoHashMap(*IDependencyInfo, bool).init(self.allocator);
             defer visited.deinit();
 
-            for (di.getDependencies()) |dep| {
+            for (di.*.getDependencies()) |dep| {
                 if (dep.shouldSkip()) continue;
 
                 const info = self.getDependencyInfoByName(dep.name) orelse return ContainerError.ServiceNotFound;
-                try self.checkTransitiveDependencies(di, info, &visited);
+                try self.checkTransitiveDependencies(di.*, info, &visited);
             }
 
-            try self.checkDependenciesLifeCycles(di);
+            try self.checkDependenciesLifeCycles(di.*);
         }
     }
 
@@ -275,7 +290,7 @@ pub const Container = struct {
             if (dep.is_slice) {
                 const factories = self.getFactoriesByName(dep.name);
 
-                for (factories) |*factory| {
+                for (factories) |factory| {
                     try checkLifeCycles(check, factory);
                 }
             }
