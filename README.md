@@ -10,7 +10,7 @@ A simple and lightweight dependency injection (DI) container for Zig. Manage you
 * Scoped Services: Manage lifetimes within scopes.
 * Generics Support: Work with generic types smoothly.
 * Error Handling: Gracefully handle errors when creating/allocating services
-* Object Management: Implement your own logic for deinitializing resources, which will be called by the service provider when freeing resources.
+* Object Management: Implement your own logic for deinitializing resources, which will be called by the service provider when freeing resources. Here [example](https://github.com/AleksandrShadrin/di.zig/blob/main/examples/deinit.zig)
 * Thread Safety: The service provider guarantees that singleton resolving is thread-safe. For other usage if you need thread safety use scopes.
 * Support custom allocators for scopes
 
