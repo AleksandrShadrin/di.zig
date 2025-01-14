@@ -88,9 +88,17 @@ pub fn SliceVerifyBehavior(T: type) type {
             visited: *std.AutoHashMap(*IDependencyInfo, void),
         ) !void {
             const child = @typeInfo(T).Pointer.child;
-            const dep_info = container.getDependencyInfo(child) orelse return ContainerError.ServiceNotFound;
+            const dep_with_factories = try container.getDependencyWithFactories(child);
 
-            try verifyDependencyInfo(dep_info, container, life_cycle, visited);
+            try verifyDependencyInfo(dep_with_factories.dependency, container, life_cycle, visited);
+            std.log.warn(
+                "failed to verify one of the factories {s}",
+                .{dep_with_factories.factories[0].getName()},
+            );
+
+            for (dep_with_factories.factories) |factory| {
+                try checkLifeCycle(life_cycle, factory.life_cycle);
+            }
         }
     };
 }
