@@ -61,9 +61,6 @@ pub const Container = struct {
 
     // Internal function to register a dependency with a specified lifecycle
     fn register(self: *Self, comptime dep: anytype, life_cycle: LifeCycle) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
         switch (@typeInfo(@TypeOf(dep))) {
             .Type => {
                 // If the dependency is a type, create a DependencyInfo instance
@@ -91,9 +88,6 @@ pub const Container = struct {
 
     // Generic registration with factory function
     pub fn registerWithFactory(self: *Container, Factory: anytype, lifecycle: LifeCycle) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
         const ReturnType = utilities.getReturnType(Factory);
 
         var dep_info = try self.allocator.create(DependencyInfo(*ReturnType));
@@ -171,7 +165,7 @@ pub const Container = struct {
 
     pub fn getDependencyWithFactories(self: *Self, comptime T: type) !DependencyWithFactories {
         return .{
-            .dependency = if (generics.isGeneric(T)) try self.getOrAddGeneric(T) else self.dependencies.get(@typeName(T)),
+            .dependency = if (generics.isGeneric(T)) try getOrAddGeneric(self, T) else self.dependencies.get(@typeName(T)),
             .factories = self.getFactories(T),
         };
     }
@@ -208,39 +202,6 @@ pub const Container = struct {
         return self.dependencies.get(generics.getName(T));
     }
 
-    pub fn getOrAddGeneric(self: *Self, comptime T: type) !*IDependencyInfo {
-        const inner_type: type = generics.getGenericType(T);
-
-        // Retrieve the dependency interface for the generic type from the container.
-        const generic_di_interface = self.getGenericWrapper(T);
-
-        // Check if the inner type and the generic type are already registered.
-        const concrete_di_interface = self.getDependencyInfo(inner_type);
-        const container_di_interface = self.getDependencyInfo(T);
-
-        if (generic_di_interface == null and
-            concrete_di_interface == null)
-            return ContainerError.ServiceNotFound;
-
-        if (container_di_interface != null and
-            concrete_di_interface != null)
-            return container_di_interface.?;
-
-        const life_cycle = if (concrete_di_interface != null) concrete_di_interface.?.life_cycle else generic_di_interface.?.life_cycle;
-
-        // If the generic type itself is not registered, register it based on its lifecycle.
-        if (container_di_interface == null) {
-            try self.register(T, life_cycle);
-        }
-
-        // If the inner type is not registered, register it based on its lifecycle.
-        if (concrete_di_interface == null) {
-            try self.register(inner_type, life_cycle);
-        }
-
-        return self.getDependencyInfo(T).?;
-    }
-
     // Create a ServiceProvider instance after validating dependencies
     pub fn createServiceProvider(self: *Self) !ServiceProvider {
         try self.validateDependencies();
@@ -256,98 +217,79 @@ pub const Container = struct {
     fn validateDependencies(self: *Container) !void {
         var iter = self.dependencies.valueIterator();
 
+        var visited = std.AutoHashMap(*IDependencyInfo, void).init(self.allocator);
+        defer visited.deinit();
+
         while (iter.next()) |di| {
-            var visited = std.AutoHashMap(*IDependencyInfo, bool).init(self.allocator);
-            defer visited.deinit();
+            defer visited.clearRetainingCapacity();
+            try visited.put(di.*, undefined);
 
             for (di.*.getDependencies()) |dep| {
-                if (dep.shouldSkip()) continue;
-
-                const info = self.getDependencyInfoByName(dep.name) orelse return ContainerError.ServiceNotFound;
-                try self.checkTransitiveDependencies(di.*, info, &visited);
+                try dep.verify_behavior(self, di.*.life_cycle, &visited);
             }
-
-            try self.checkDependenciesLifeCycles(di.*);
-        }
-    }
-
-    // Check that the lifecycles of dependencies are compatible
-    fn checkDependenciesLifeCycles(
-        self: *Self,
-        check: *IDependencyInfo,
-    ) !void {
-        const deps = check.getDependencies();
-
-        for (deps) |dep| {
-            // Validate that the dependency exists or is allowed
-            if (dep.shouldSkip()) continue;
-
-            const info = self.getDependencyInfoByName(dep.name);
-            if (!dep.is_slice and info == null) return ContainerError.ServiceNotFound;
-
-            if (info != null) try checkLifeCycles(check, info.?);
-
-            if (dep.is_slice) {
-                const factories = self.getFactoriesByName(dep.name);
-
-                for (factories) |factory| {
-                    try checkLifeCycles(check, factory);
-                }
-            }
-        }
-    }
-
-    pub fn checkLifeCycles(parent: *IDependencyInfo, child: *IDependencyInfo) !void {
-        switch (parent.life_cycle) {
-            .singleton => {
-                if (child.life_cycle != .singleton) {
-                    std.log.warn(
-                        "{s} is singleton and has dependency {s} with less lifecycle.",
-                        .{ parent.getName(), child.getName() },
-                    );
-                    return ContainerError.LifeCycleError;
-                }
-            },
-            .scoped => {
-                if (child.life_cycle == .transient) {
-                    std.log.warn(
-                        "{s} is scoped and has dependency {s} with less lifecycle.",
-                        .{ parent.getName(), child.getName() },
-                    );
-                    return ContainerError.LifeCycleError;
-                }
-            },
-            else => {},
-        }
-    }
-
-    // Check for transitive dependency cycles using a visited set to prevent infinite recursion
-    fn checkTransitiveDependencies(
-        self: *Self,
-        check: *IDependencyInfo,
-        dependency: *IDependencyInfo,
-        visited: *std.AutoHashMap(*IDependencyInfo, bool),
-    ) !void {
-        if (check == dependency)
-            return ContainerError.CircularDependency;
-
-        // If already visited, skip to prevent infinite recursion
-        if (visited.contains(dependency)) {
-            return;
-        }
-
-        // Mark the current dependency as visited
-        try visited.put(dependency, true);
-
-        for (dependency.getDependencies()) |dep| {
-            if (dep.shouldSkip()) continue;
-
-            const info = self.getDependencyInfoByName(dep.name) orelse {
-                std.log.warn("dependency {s} not registered\n", .{dep.name});
-                return ContainerError.ServiceNotFound;
-            };
-
-            try self.checkTransitiveDependencies(check, info, visited);
         }
     }
 };
+
+// internal methods
+pub fn getOrAddGeneric(self: *Container, comptime T: type) !*IDependencyInfo {
+    self.mutex.lock();
+    defer self.mutex.unlock();
+
+    return try nonBlockingGetOrAddGeneric(self, T);
+}
+
+pub fn nonBlockingGetOrAddGeneric(self: *Container, comptime T: type) !*IDependencyInfo {
+    const inner_type: type = generics.getGenericType(T);
+
+    // Retrieve the dependency interface for the generic type from the container.
+    const generic_di_interface = self.getGenericWrapper(T);
+
+    // Check if the inner type and the generic type are already registered.
+    const concrete_di_interface = self.getDependencyInfo(inner_type);
+    const container_di_interface = self.getDependencyInfo(T);
+
+    if (generic_di_interface == null and
+        concrete_di_interface == null)
+        return ContainerError.ServiceNotFound;
+
+    if (container_di_interface != null and
+        concrete_di_interface != null)
+        return container_di_interface.?;
+
+    const life_cycle = if (concrete_di_interface != null) concrete_di_interface.?.life_cycle else generic_di_interface.?.life_cycle;
+
+    // If the generic type itself is not registered, register it based on its lifecycle.
+    var registered = false;
+    if (container_di_interface == null) {
+        try self.register(T, life_cycle);
+        registered = true;
+    }
+
+    // If the inner type is not registered, register it based on its lifecycle.
+    if (concrete_di_interface == null) {
+        try self.register(inner_type, life_cycle);
+        registered = true;
+    }
+
+    const dep_info = self.getDependencyInfo(T).?;
+    errdefer {
+        _ = self.dependencies.remove(dep_info.getName());
+
+        dep_info.destroy(self.allocator);
+        self.allocator.destroy(dep_info);
+    }
+
+    if (registered) {
+        var visited = std.AutoHashMap(*IDependencyInfo, void).init(self.allocator);
+        defer visited.deinit();
+
+        try visited.put(dep_info, undefined);
+
+        for (dep_info.getDependencies()) |dep| {
+            try dep.verify_behavior(self, dep_info.life_cycle, &visited);
+        }
+    }
+
+    return dep_info;
+}
