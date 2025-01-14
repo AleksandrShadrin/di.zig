@@ -230,11 +230,6 @@ pub const ServiceProvider = struct {
         var len: usize = if (infos.dependency != null) 1 else 0;
         len += infos.factories.len;
 
-        if (len == 0) {
-            if (ctx.root == null) ctx.root = resolved;
-            return &.{};
-        }
-
         var slice = try self.allocator.alloc(*T, len);
         errdefer self.allocator.free(slice);
 
