@@ -261,11 +261,9 @@ test "Service Provider - Should validate generics for cycles" {
     try container.registerTransient(services.B);
     try container.registerTransient(services.C);
 
-    var sp = try container.createServiceProvider();
-    defer sp.deinit();
+    const sp = container.createServiceProvider();
 
-    const service = sp.resolve(services.B);
-    try std.testing.expectError(di.ServiceProviderError.CycleDependency, service);
+    try std.testing.expectError(di.ContainerError.CircularDependency, sp);
 }
 
 test "Service Provider - Should correctly resolve generics" {

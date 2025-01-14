@@ -14,8 +14,6 @@ pub const ServiceProviderError = error{
     ServiceNotFound, // The requested service is not registered in the container.
     NoActiveScope, // Attempted to resolve a scoped service without an active scope.
     UnresolveLifeCycleShouldBeTransient, // Tried to unresolve a service that isn't transient.
-    CycleDependency,
-    LifeCycleError,
 };
 
 // Type aliases for dependency-related interfaces for convenience and readability.
@@ -149,8 +147,6 @@ pub const ServiceProvider = struct {
 
         // Perform the actual resolution using the internal resolve method.
         const result = try self.inner_resolve(&ctx, T);
-        ctx.root.?.is_root = true;
-
         return result;
     }
 
@@ -160,8 +156,6 @@ pub const ServiceProvider = struct {
 
         // Perform the actual resolution using the internal resolve method.
         const result = try self.resolveStrategy(&ctx, []const *T);
-        ctx.root.?.is_root = true;
-
         return result;
     }
 
@@ -236,11 +230,6 @@ pub const ServiceProvider = struct {
         var len: usize = if (infos.dependency != null) 1 else 0;
         len += infos.factories.len;
 
-        if (len == 0) {
-            if (ctx.root == null) ctx.root = resolved;
-            return &.{};
-        }
-
         var slice = try self.allocator.alloc(*T, len);
         errdefer self.allocator.free(slice);
 
@@ -284,7 +273,7 @@ pub const ServiceProvider = struct {
     /// - A pointer to the resolved generic dependency.
     /// - An error if the resolution process fails.
     fn buildGenericType(self: *Self, ctx: *BuilderContext, T: type) !*T {
-        const info = try self.container.getOrAddGeneric(T);
+        const info = try container.getOrAddGeneric(self.container, T);
         return try self.buildSimpleType(ctx, T, info);
     }
 
@@ -301,20 +290,11 @@ pub const ServiceProvider = struct {
     /// - A pointer to the instantiated dependency.
     /// - An error if the building process fails.
     fn buildSimpleType(self: *Self, ctx: *BuilderContext, T: type, info: *IDependencyInfo) !*T {
-        var node = std.DoublyLinkedList(*IDependencyInfo).Node{ .data = info };
-        ctx.append(&node);
-        defer {
-            ctx.pop();
-            node.data.verify();
-        }
-
         var new_root = Resolved.empty(self.allocator);
         new_root.info = info;
 
         const current_root = ctx.root;
         ctx.root = &new_root;
-
-        try ctx.verify();
 
         var storage: ?*Resolved = null;
         errdefer switch (info.life_cycle) {
@@ -513,7 +493,6 @@ const Resolved = struct {
 
     allocator: std.mem.Allocator, // Allocator used for managing memory within this Resolved context.
 
-    is_root: bool = false,
     is_slice: bool = false,
 
     /// Constructs an empty Resolved instance with an initialized child list.
@@ -534,7 +513,6 @@ const Resolved = struct {
     pub fn deinit(self: *Self, sp: *ServiceProvider) void {
         defer {
             self.child.clearAndFree();
-            self.is_root = false;
             self.is_slice = false;
             self.info = null;
         }
@@ -546,7 +524,6 @@ const Resolved = struct {
     pub fn partiallyDeinit(self: *Self, sp: *ServiceProvider) void {
         defer {
             self.child.clearRetainingCapacity();
-            self.is_root = false;
             self.is_slice = false;
             self.info = null;
         }
@@ -627,14 +604,10 @@ const BuilderContext = struct {
     sp: *ServiceProvider, // Reference to the ServiceProvider responsible for resolving dependencies.
     root: ?*Resolved, // Pointer to the currently active Resolved context during the resolution process.
 
-    info_chain: std.DoublyLinkedList(*IDependencyInfo),
-
     /// Initializes a new BuilderContext instance.
     ///
     /// Parameters:
     /// - `sp`: Reference to the ServiceProvider managing this resolution context.
-    /// - `scope`: Optional scope within which scoped dependencies are resolved.
-    /// - `allocator`: Allocator for memory allocations within the resolution context.
     ///
     /// Returns:
     /// - A newly initialized BuilderContext.
@@ -642,39 +615,7 @@ const BuilderContext = struct {
         return Self{
             .sp = sp,
             .root = null,
-            .info_chain = std.DoublyLinkedList(*IDependencyInfo){},
         };
-    }
-
-    pub fn append(self: *Self, node: *std.DoublyLinkedList(*IDependencyInfo).Node) void {
-        self.info_chain.append(node);
-    }
-
-    pub fn pop(self: *Self) void {
-        _ = self.info_chain.pop();
-    }
-
-    pub fn verify(self: *Self) !void {
-        var node = self.info_chain.first;
-
-        if (node == null or
-            node.?.data.isVerified())
-            return;
-
-        var prev_info = node.?.data;
-
-        var visited = std.StringHashMap(bool).init(self.sp.allocator);
-        defer visited.deinit();
-
-        while (node != null) : (node = node.?.next) {
-            if (visited.contains(node.?.data.getName()))
-                return ServiceProviderError.CycleDependency;
-
-            try container.Container.checkLifeCycles(prev_info, node.?.data);
-
-            prev_info = node.?.data;
-            try visited.put(node.?.data.getName(), true);
-        }
     }
 };
 
