@@ -10,28 +10,23 @@ const container_mod = @import("container.zig");
 
 const ContainerError = @import("container.zig").ContainerError;
 
-// Import Builder from builder.zig
 const Builder = builder_module.Builder;
 
 const generics = @import("generics.zig");
 
-// Define possible dependency errors
 const DependencyError = error{
     DependencyShouldBeReference,
     NoInitFn,
 };
 
-// Enum representing the lifecycle of a dependency
 pub const LifeCycle = enum {
     scoped,
     singleton,
     transient,
 };
 
-// Structure representing a single dependency
 const Dependency = struct {
     name: []const u8,
-
     verify_behavior: *const fn (
         container: *Container,
         life_cycle: LifeCycle,
@@ -142,37 +137,31 @@ fn checkLifeCycle(parent: LifeCycle, current: LifeCycle) !void {
     }
 }
 
-// Interface for dependency information
 pub const IDependencyInfo = struct {
     ptr: *anyopaque,
 
     vtable: struct {
-        destroy_fn: *const fn (*anyopaque, std.mem.Allocator) void, // destroy ptr object
-
+        destroy_fn: *const fn (*anyopaque, std.mem.Allocator) void,
         get_dependencies_fn: *const fn (ctx: *anyopaque) []const Dependency,
         get_name_fn: *const fn (ctx: *anyopaque) []const u8,
         call_deinit_fn: *const fn (ctx: *anyopaque, sp: *ServiceProvider) void,
-        destroy_dependency_fn: *const fn (*anyopaque, std.mem.Allocator) void, // destroy ptr object
+        destroy_dependency_fn: *const fn (*anyopaque, std.mem.Allocator) void,
     },
 
     life_cycle: LifeCycle,
 
-    /// Retrieves the list of dependencies
     pub fn getDependencies(self: *const IDependencyInfo) []const Dependency {
         return self.vtable.get_dependencies_fn(self.ptr);
     }
 
-    /// Retrieves the name of the dependency
     pub fn getName(self: *const IDependencyInfo) []const u8 {
         return self.vtable.get_name_fn(self.ptr);
     }
 
-    /// Deinitializes the dependency
     pub fn callDeinit(self: *const IDependencyInfo, ptr: *anyopaque, sp: *ServiceProvider) void {
         return self.vtable.call_deinit_fn(ptr, sp);
     }
 
-    /// Deinitializes the dependency
     pub fn destroyDependency(self: *const IDependencyInfo, ptr: *anyopaque, allocator: std.mem.Allocator) void {
         return self.vtable.destroy_dependency_fn(ptr, allocator);
     }
@@ -182,29 +171,24 @@ pub const IDependencyInfo = struct {
     }
 };
 
-// Function to generate DependencyInfo for a given type `T`
 pub fn DependencyInfo(comptime T: type) type {
     const DerefT = utilities.deref(T);
-
     const dep_count: usize = if (utilities.hasInit(DerefT)) utilities.getInitArgs(DerefT).len else 0;
 
     return struct {
         const Self = @This();
 
         name: []const u8 = @typeName(DerefT),
-        dep_array: [dep_count]Dependency = undefined, // Initialized in `init`
-
+        dep_array: [dep_count]Dependency = undefined,
         builder: ?Builder(DerefT) = null,
         with_comptime_builder: bool,
-
         life_cycle: LifeCycle,
 
-        /// Initializes the DependencyInfo with a lifecycle
         pub fn init(life_cycle: LifeCycle, comptime is_generic: bool) !Self {
             var self = Self{
                 .with_comptime_builder = true,
                 .life_cycle = life_cycle,
-                .dep_array = undefined, // Will be initialized below
+                .dep_array = undefined,
             };
 
             if (!is_generic) {
@@ -212,7 +196,6 @@ pub fn DependencyInfo(comptime T: type) type {
                     return DependencyError.NoInitFn;
 
                 const dependencies = utilities.getInitArgs(DerefT);
-
                 inline for (dependencies, 0..) |dep, i| {
                     const deref_dep = utilities.deref(dep);
                     const is_reserved = dep == std.mem.Allocator or dep == *ServiceProvider;
@@ -229,7 +212,6 @@ pub fn DependencyInfo(comptime T: type) type {
                         };
                     }
 
-                    // Ensure that the dependency should be a reference
                     if (!utilities.isSlice(deref_dep) and
                         dep != std.mem.Allocator and
                         deref_dep == dep)
@@ -240,17 +222,15 @@ pub fn DependencyInfo(comptime T: type) type {
             return self;
         }
 
-        /// Initializes the DependencyInfo with a custom builder and lifecycle
         pub fn initWithBuilder(builder: Builder(DerefT), life_cycle: LifeCycle) Self {
             return Self{
                 .builder = builder,
                 .with_comptime_builder = false,
                 .life_cycle = life_cycle,
-                .dep_array = undefined, // Not used when not using comptime builder
+                .dep_array = undefined,
             };
         }
 
-        /// Provides the interface representation of the dependency info
         pub fn getInterface(self: *Self) IDependencyInfo {
             return IDependencyInfo{
                 .ptr = self,
@@ -265,27 +245,21 @@ pub fn DependencyInfo(comptime T: type) type {
             };
         }
 
-        /// Retrieves dependencies based on the builder type
         fn getDependencies(ctx: *anyopaque) []const Dependency {
             const self: *Self = @ptrCast(@alignCast(ctx));
-
             if (!self.with_comptime_builder) {
                 return &.{};
             }
-
             return &self.dep_array;
         }
 
-        /// Retrieves the name of the dependency
         fn getName(ctx: *anyopaque) []const u8 {
             const self: *Self = @ptrCast(@alignCast(ctx));
             return self.name;
         }
 
-        /// Deinitializes the dependency if necessary
         fn callDeinit(ptr: *anyopaque, sp: *ServiceProvider) void {
             const item: *DerefT = @ptrCast(@alignCast(ptr));
-
             Destructor(DerefT).deinit(item, sp) catch |err| {
                 std.log.warn("Error when deinit {any} with error {any}", .{ DerefT, err });
             };
@@ -303,17 +277,12 @@ pub fn DependencyInfo(comptime T: type) type {
     };
 }
 
-// Structure to handle destruction of a type `T`
 fn Destructor(comptime T: type) type {
     return struct {
-        /// Deinitializes an instance of `T`
         pub fn deinit(t: *T, sp: *ServiceProvider) !void {
-            // Check if `T` has a `deinit` method
             if (!std.meta.hasFn(T, "deinit")) return;
-
             const deinit_fn_type = @typeInfo(@TypeOf(T.deinit)).Fn;
 
-            // Ensure `deinit` has exactly one parameter
             if ((deinit_fn_type.params[0].type != *T and
                 deinit_fn_type.params[0].type != T))
                 @compileError("deinit should have one parameter for " ++ @typeName(T) ++ " and have single arg as *Self");

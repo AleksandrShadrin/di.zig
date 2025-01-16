@@ -42,7 +42,7 @@ pub const ServiceProvider = struct {
     /// Initializes a new ServiceProvider instance.
     ///
     /// Parameters:
-    /// - `a`: Allocator for memory allocations.
+    /// - `allocator`: Allocator for memory allocations.
     /// - `c`: Pointer to the dependency container with service registrations.
     ///
     /// Returns:
@@ -323,6 +323,8 @@ pub const ServiceProvider = struct {
                 new_root.allocator = root_sp.allocator;
 
                 const mutex = try root_sp.singleton_locks.?.acquireLock(info);
+
+                mutex.lock();
                 defer mutex.unlock();
 
                 if (self.singleton.get(info)) |singleton| {
@@ -684,36 +686,41 @@ fn ServiceProviderBuilder(comptime T: type) type {
 const SingletonLocks = struct {
     const Self = @This();
 
-    locks: std.AutoHashMap(*IDependencyInfo, Mutex),
+    locks: std.AutoHashMap(*IDependencyInfo, *Mutex),
     mutex: Mutex,
+    allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
-            .locks = std.AutoHashMap(*IDependencyInfo, Mutex).init(allocator),
+            .locks = std.AutoHashMap(*IDependencyInfo, *Mutex).init(allocator),
             .mutex = Mutex{},
+            .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *Self) void {
+        var it = self.locks.iterator();
+        while (it.next()) |entry| {
+            self.allocator.destroy(entry.value_ptr.*);
+        }
         self.locks.deinit();
     }
 
-    // lock founded mutex or create new and lock it.
-    // Mutext should be unlocked from inner
     pub fn acquireLock(self: *Self, info: *IDependencyInfo) !*Mutex {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        var result = try self.locks.getOrPut(info);
+        const result = try self.locks.getOrPut(info);
         if (result.found_existing) {
-            result.value_ptr.lock();
-            return result.value_ptr;
+            return result.value_ptr.*;
         }
 
-        result.value_ptr.* = Mutex{};
-        result.value_ptr.lock();
+        const mutex = try self.allocator.create(Mutex);
+        mutex.* = Mutex{};
 
-        return result.value_ptr;
+        result.value_ptr.* = mutex;
+
+        return mutex;
     }
 };
 
