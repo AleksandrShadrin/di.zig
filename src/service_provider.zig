@@ -33,7 +33,7 @@ pub const ServiceProvider = struct {
 
     transient_services: TransientResolvedServices, // Maintains a list of root resolution contexts for tracking.
 
-    singleton: OnceResolvedServices, // Stores instances of singleton services managed by the provider.
+    singleton: ?OnceResolvedServices, // Stores instances of singleton services managed by the provider.
     singleton_locks: ?SingletonLocks = null,
 
     scope: ?*Scope = null,
@@ -59,7 +59,7 @@ pub const ServiceProvider = struct {
 
     fn clone(self: *Self, allocator: std.mem.Allocator) !Self {
         return Self{
-            .singleton = self.singleton,
+            .singleton = null,
             .allocator = allocator,
             .container = self.container,
             .transient_services = TransientResolvedServices.init(allocator),
@@ -72,7 +72,7 @@ pub const ServiceProvider = struct {
         self.transient_services.deinit(self);
 
         if (self.parent == null)
-            self.singleton.deinit(self);
+            self.singleton.?.deinit(self);
 
         if (self.singleton_locks != null)
             self.singleton_locks.?.deinit();
@@ -290,7 +290,13 @@ pub const ServiceProvider = struct {
     /// - A pointer to the instantiated dependency.
     /// - An error if the building process fails.
     fn buildSimpleType(self: *Self, ctx: *BuilderContext, T: type, info: *IDependencyInfo) !*T {
-        var new_root = Resolved.empty(self.allocator);
+        var new_root: Resolved = undefined;
+
+        switch (info.life_cycle) {
+            .transient, .scoped => new_root = Resolved.empty(self.allocator),
+            .singleton => new_root = Resolved.empty(self.getRoot().allocator),
+        }
+
         new_root.info = info;
 
         const current_root = ctx.root;
@@ -320,14 +326,13 @@ pub const ServiceProvider = struct {
             },
             .singleton => {
                 const root_sp = self.getRoot();
-                new_root.allocator = root_sp.allocator;
 
                 const mutex = try root_sp.singleton_locks.?.acquireLock(info);
 
                 mutex.lock();
                 defer mutex.unlock();
 
-                if (self.singleton.get(info)) |singleton| {
+                if (root_sp.singleton.?.get(info)) |singleton| {
                     storage = singleton;
                 } else {
                     const dep_info: *DependencyInfo(*T) = @ptrCast(@alignCast(info.ptr));
@@ -339,7 +344,7 @@ pub const ServiceProvider = struct {
                     ptr.* = value;
                     new_root.ptr = ptr;
 
-                    storage = try self.singleton.add(new_root);
+                    storage = try root_sp.singleton.?.add(new_root);
                 }
             },
             .scoped => {
@@ -429,11 +434,6 @@ pub const ServiceProvider = struct {
     }
 };
 
-pub const ScopeError = error{
-    ServiceNotFound,
-    LifeCycleNotScope,
-};
-
 // Represents a scoped container that manages dependencies within a specific scope.
 // Scoped dependencies are tied to the lifecycle of the scope.
 pub const Scope = struct {
@@ -514,7 +514,7 @@ const Resolved = struct {
     /// Deinitializes the Resolved instance, recursively cleaning up all nested dependencies.
     pub fn deinit(self: *Self, sp: *ServiceProvider) void {
         defer {
-            self.child.clearAndFree();
+            self.child.deinit();
             self.is_slice = false;
             self.info = null;
         }
@@ -661,6 +661,7 @@ fn ServiceProviderBuilder(comptime T: type) type {
             var tuple: std.meta.Tuple(arg_types) = undefined;
 
             // Iterate over each argument type, resolve it, and populate the tuple.
+
             inline for (arg_types, 0..) |arg_type, i| {
                 tuple[i] = try b_ctx.sp.resolveStrategy(b_ctx, utilities.deref(arg_type));
             }
@@ -727,17 +728,14 @@ const SingletonLocks = struct {
 const OnceResolvedServices = struct {
     const Self = @This();
 
-    items: *std.AutoHashMap(*IDependencyInfo, *Resolved),
+    items: std.AutoHashMap(*IDependencyInfo, *Resolved),
     allocator: std.mem.Allocator,
 
     mutex: Mutex,
 
     pub fn init(allocator: std.mem.Allocator) !Self {
-        const items_ptr = try allocator.create(std.AutoHashMap(*IDependencyInfo, *Resolved));
-        items_ptr.* = std.AutoHashMap(*IDependencyInfo, *Resolved).init(allocator);
-
         return Self{
-            .items = items_ptr,
+            .items = std.AutoHashMap(*IDependencyInfo, *Resolved).init(allocator),
             .allocator = allocator,
             .mutex = Mutex{},
         };
@@ -752,7 +750,6 @@ const OnceResolvedServices = struct {
         }
 
         self.items.deinit();
-        self.allocator.destroy(self.items);
     }
 
     pub fn get(self: *Self, info: *IDependencyInfo) ?*Resolved {

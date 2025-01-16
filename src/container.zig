@@ -42,14 +42,12 @@ pub const Container = struct {
         var dep_iter = self.dependencies.valueIterator();
         while (dep_iter.next()) |dep_info| {
             dep_info.*.destroy(self.allocator);
-            self.allocator.destroy(dep_info.*);
         }
 
         var factory_iter = self.factories.valueIterator();
         while (factory_iter.next()) |factories| {
             for (factories.items) |factory_info| {
                 factory_info.destroy(self.allocator);
-                self.allocator.destroy(factory_info);
             }
 
             factories.deinit();
@@ -69,7 +67,7 @@ pub const Container = struct {
                 dep_info_ptr.* = try DependencyInfo(*dep).init(life_cycle, false);
 
                 // Add the dependency to the hash map
-                try self.addDependency(dep_info_ptr.getInterface());
+                try self.addDependency(dep_info_ptr);
             },
             .Fn => {
                 // If the dependency is a factory function, wrap it and create DependencyInfo
@@ -80,7 +78,7 @@ pub const Container = struct {
                 dep_info_ptr.*.name = utilities.genericName(dep);
 
                 // Add the dependency to the hash map
-                try self.addDependency(dep_info_ptr.getInterface());
+                try self.addDependency(dep_info_ptr);
             },
             else => @compileError("dependency unsupported"),
         }
@@ -90,47 +88,41 @@ pub const Container = struct {
     pub fn registerWithFactory(self: *Container, Factory: anytype, lifecycle: LifeCycle) !void {
         const ReturnType = utilities.getReturnType(Factory);
 
-        var dep_info = try self.allocator.create(DependencyInfo(*ReturnType));
+        const dep_info = try self.allocator.create(DependencyInfo(*ReturnType));
         errdefer self.allocator.destroy(dep_info);
 
         const builder = try utilities.getBuilder(ReturnType, Factory);
         dep_info.* = DependencyInfo(*ReturnType).initWithBuilder(builder, lifecycle);
 
-        try self.addFactory(dep_info.getInterface());
+        try self.addFactory(dep_info);
     }
 
-    fn addDependency(self: *Self, di: IDependencyInfo) !void {
-        const get_result = try self.dependencies.getOrPut(di.getName());
+    fn addDependency(self: *Self, di: anytype) !void {
+        const get_result = try self.dependencies.getOrPut(di.name);
 
-        const ptr = try self.allocator.create(IDependencyInfo);
-        ptr.* = di;
-
-        errdefer self.allocator.destroy(ptr);
-
-        if (get_result.found_existing) {
+        if (get_result.found_existing)
             get_result.value_ptr.*.destroy(self.allocator);
-            self.allocator.destroy(get_result.value_ptr.*);
-        }
 
-        get_result.value_ptr.* = ptr;
+        const interface = di.getInterface();
+        di.interface = interface;
+
+        get_result.value_ptr.* = &di.interface;
     }
 
-    fn addFactory(self: *Self, di: IDependencyInfo) !void {
-        const get_result = try self.factories.getOrPut(di.getName());
+    fn addFactory(self: *Self, di: anytype) !void {
+        const get_result = try self.factories.getOrPut(di.name);
 
-        const ptr = try self.allocator.create(IDependencyInfo);
-        ptr.* = di;
-
-        errdefer self.allocator.destroy(ptr);
+        const interface = di.getInterface();
+        di.interface = interface;
 
         if (get_result.found_existing) {
-            return try get_result.value_ptr.append(ptr);
+            return try get_result.value_ptr.append(&di.interface);
         }
 
         var factories = std.ArrayList(*IDependencyInfo).init(self.allocator);
         errdefer factories.deinit();
 
-        try factories.append(ptr);
+        try factories.append(&di.interface);
         get_result.value_ptr.* = factories;
     }
 
@@ -273,12 +265,6 @@ pub fn nonBlockingGetOrAddGeneric(self: *Container, comptime T: type) !*IDepende
     }
 
     const dep_info = self.getDependencyInfo(T).?;
-    errdefer {
-        _ = self.dependencies.remove(dep_info.getName());
-
-        dep_info.destroy(self.allocator);
-        self.allocator.destroy(dep_info);
-    }
 
     if (registered) {
         var visited = std.AutoHashMap(*IDependencyInfo, void).init(self.allocator);
