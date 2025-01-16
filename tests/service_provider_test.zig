@@ -407,7 +407,7 @@ test "Service Provider - Should deinit failed dependency" {
         try std.testing.expect(s.info == null and s.ptr == null);
     }
 
-    try std.testing.expect(sp.singleton.items.count() == 1);
+    try std.testing.expect(sp.singleton.?.items.count() == 1);
 }
 
 test "Service Provider - Should not add failed singleton dependency" {
@@ -426,7 +426,7 @@ test "Service Provider - Should not add failed singleton dependency" {
     defer sp.deinit();
 
     _ = sp.resolve(service.A) catch {};
-    try std.testing.expect(sp.singleton.items.count() == 1);
+    try std.testing.expect(sp.singleton.?.items.count() == 1);
 }
 
 test "Service Provider - Should leak inner resolve dependency on fail build" {

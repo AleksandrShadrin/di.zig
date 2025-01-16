@@ -184,6 +184,8 @@ pub fn DependencyInfo(comptime T: type) type {
         with_comptime_builder: bool,
         life_cycle: LifeCycle,
 
+        interface: IDependencyInfo = undefined,
+
         pub fn init(life_cycle: LifeCycle, comptime is_generic: bool) !Self {
             var self = Self{
                 .with_comptime_builder = true,
